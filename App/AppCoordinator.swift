@@ -21,12 +21,17 @@ final class AppCoordinator: ObservableObject {
     private var hotkey: HotkeyListening?
     private var recorder: AudioRecording?
     private var transcriber: Transcribing?
+    private var perms: PermissionsCoordinator!
+
+    init() {
+        // Two-phase: build perms with a callback, then trigger bootstrap.
+        self.perms = PermissionsCoordinator { [weak self] snap in
+            self?.applyPermissionSnapshot(snap)
+        }
+    }
 
     func bootstrap() async {
-        await PermissionGate.ensureMicrophone()
-        _ = PermissionGate.ensureAccessibility(prompt: true)
-        _ = PermissionGate.ensureInputMonitoring(prompt: true)
-
+        await perms.bootstrap()
         do {
             let kit = try await RealWhisperKit.make()
             let transcriber = Transcriber(kit: kit, language: nil)
@@ -45,31 +50,13 @@ final class AppCoordinator: ObservableObject {
             self.recorder = recorder
             self.transcriber = transcriber
             self.runner = runner
-            self.uiState = .idle
-            tryStartHotkey()
+            // Hotkey start is gated on permissions in applyPermissionSnapshot.
+            if uiState != .permissionNeeded { tryStartHotkey() }
+            if uiState == .loadingModel { uiState = .idle }
         } catch {
             Logger.app.error("bootstrap failed: \(error.localizedDescription)")
             self.lastError = error.localizedDescription
             self.uiState = .fatalError
-        }
-    }
-
-    func tryStartHotkey() {
-        guard let runner else { return }
-        let hk = Hotkey { event in
-            switch event {
-            case .press:   runner.onPress()
-            case .release: runner.onRelease()
-            }
-        }
-        do {
-            try hk.start()
-            self.hotkey = hk
-            Logger.app.info("hotkey started")
-        } catch {
-            Logger.app.error("hotkey start failed: \(error.localizedDescription)")
-            self.uiState = .permissionNeeded
-            self.permissionMessage = "Grant Accessibility and Input Monitoring to Mumblur."
         }
     }
 
@@ -90,11 +77,50 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
+    // MARK: - Private
+
+    private func tryStartHotkey() {
+        guard let runner, hotkey == nil else { return }
+        let hk = Hotkey { event in
+            switch event {
+            case .press:   runner.onPress()
+            case .release: runner.onRelease()
+            }
+        }
+        do {
+            try hk.start()
+            self.hotkey = hk
+            Logger.app.info("hotkey started")
+        } catch {
+            Logger.app.error("hotkey start failed: \(error.localizedDescription)")
+            self.uiState = .permissionNeeded
+            self.permissionMessage = "Grant Accessibility and Input Monitoring to Mumblur."
+        }
+    }
+
+    private func applyPermissionSnapshot(_ snap: PermissionsCoordinator.Snapshot) {
+        if !snap.allGranted {
+            uiState = .permissionNeeded
+            var missing: [String] = []
+            if snap.microphone != .granted        { missing.append("Microphone") }
+            if snap.accessibility != .granted     { missing.append("Accessibility") }
+            if snap.inputMonitoring != .granted   { missing.append("Input Monitoring") }
+            permissionMessage = "Grant: " + missing.joined(separator: ", ")
+            return
+        }
+        permissionMessage = nil
+        // All granted — start hotkey if we have a runner.
+        if runner != nil && hotkey == nil {
+            tryStartHotkey()
+        }
+        if uiState == .permissionNeeded { uiState = .idle }
+    }
+
     private func applyRunnerState(_ s: Runner.State) {
         switch s {
         case .idle:         uiState = .idle
         case .recording:    uiState = .recording
-        case .stopping:     uiState = .transcribing      // collapse for UI
+        case .stopping:     uiState = .transcribing
         case .transcribing: uiState = .transcribing
         }
     }
