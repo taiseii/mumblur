@@ -6,13 +6,17 @@ pass raw float32 mono samples at 16 kHz; we return a plain string.
 
 from __future__ import annotations
 
-from typing import Callable, Protocol
+from typing import Any, Callable, Iterable, Protocol
 
 import numpy as np
 
 
+class _Segment(Protocol):
+    text: str
+
+
 class _Model(Protocol):
-    def transcribe(self, samples, **kwargs): ...
+    def transcribe(self, samples: Any, **kwargs: Any) -> Iterable[_Segment]: ...
 
 
 def _default_factory(model: str, **kwargs) -> _Model:
