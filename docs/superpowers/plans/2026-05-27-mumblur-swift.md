@@ -16,7 +16,7 @@ Each task ends with `scripts/verify_task.sh N`. The harness encodes the per-task
 
 - **Each task's last step before commit is `scripts/verify_task.sh N`.** If it fails, fix the cause and re-run; do not commit a failing state.
 - **Commits land only after the harness passes.** Commit count = task progress.
-- **The harness is offline.** The slow WhisperKit integration test is exercised separately by the user.
+- **The harness does not run the slow model integration test.** Note: the *first* `swift build` and `xcodebuild` on a fresh clone do require network access for SPM package resolution (WhisperKit and its transitive dependencies). Subsequent runs use the cached resolved versions.
 
 The script is created in Task 0 and extended by each subsequent task.
 
@@ -224,7 +224,7 @@ mkdir -p MumblurCore/Sources/MumblurCore MumblurCore/Tests/MumblurCoreTests
 Write `MumblurCore/Package.swift`:
 
 ```swift
-// swift-tools-version:5.10
+// swift-tools-version:6.0
 import PackageDescription
 
 let package = Package(
@@ -252,9 +252,12 @@ let package = Package(
                 .copy("Fixtures"),
             ]
         ),
-    ]
+    ],
+    swiftLanguageModes: [.v6]
 )
 ```
+
+Swift 6 language mode applies to both the library and test targets, matching the app target's `SWIFT_STRICT_CONCURRENCY=complete` setting in `project.yml`.
 
 Write `MumblurCore/Sources/MumblurCore/MumblurCore.swift`:
 
@@ -1580,17 +1583,17 @@ final class RunnerTests: XCTestCase {
         let rec = FakeAudioRecorder()
         let tr = FakeTranscriber(text: "x")
         let paster = SpyPaster()
-        var t: TimeInterval = 0
+        let testClock = TestClock()
         let runner = Runner(
             recorder: rec,
             transcriber: tr,
             paster: paster,
             minHoldMs: 200,
-            clock: { Date(timeIntervalSince1970: t) }
+            clock: { testClock.date() }
         )
 
         runner.onPress()
-        t = 0.05    // 50 ms — under threshold
+        testClock.now = 0.05    // 50 ms — under threshold
         runner.onRelease()
         await waitUntilIdle(runner)
 
@@ -1739,6 +1742,19 @@ final class RunnerTests: XCTestCase {
     }
 }
 
+// MARK: - Test helpers
+
+/// Thread-safe controllable clock for Swift 6 strict-concurrency tests.
+final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _now: TimeInterval = 0
+    var now: TimeInterval {
+        get { lock.lock(); defer { lock.unlock() }; return _now }
+        set { lock.lock(); _now = newValue; lock.unlock() }
+    }
+    func date() -> Date { Date(timeIntervalSince1970: now) }
+}
+
 // MARK: - Fakes used in RunnerTests (also used elsewhere)
 
 final class FakeTranscriber: Transcribing, @unchecked Sendable {
@@ -1808,18 +1824,38 @@ extension FakeAudioRecorder {
 
 /// SlowStopRecorder — `stop()` blocks until `unblockStop()` is called. Used to
 /// simulate the TOCTOU window between recorder.stop returning and state transition.
+/// All mutable state is guarded by an NSLock so this is safe under Swift 6 strict
+/// concurrency even though it's accessed from both the test main thread and the
+/// detached release task.
 final class SlowStopRecorder: AudioRecording, @unchecked Sendable {
     private let stopGate = DispatchSemaphore(value: 0)
-    private var active = false
-    var startCount: Int = 0
+    private let lock = NSLock()
+    private var _active = false
+    private var _startCount = 0
 
-    func start() throws { active = true; startCount += 1 }
+    var startCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _startCount
+    }
+
+    func start() throws {
+        lock.lock(); defer { lock.unlock() }
+        _active = true
+        _startCount += 1
+    }
+
     func stop() -> [Float] {
         stopGate.wait()      // blocks until unblockStop
-        active = false
+        lock.lock(); defer { lock.unlock() }
+        _active = false
         return [0.0]
     }
-    func abortIfActive() { active = false }
+
+    func abortIfActive() {
+        lock.lock(); defer { lock.unlock() }
+        _active = false
+    }
+
     func unblockStop() { stopGate.signal() }
 }
 ```
@@ -1953,8 +1989,9 @@ public final class Runner: @unchecked Sendable {
         lock.withLock { $0.state = .transcribing }
         onStateChange(.transcribing)
 
-        let task = Task.detached(priority: .userInitiated) { [weak self] in
-            await self?.doWork(samples: samples)
+        let task: Task<Void, Never> = Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            await self.doWork(samples: samples)
         }
 
         // If doWork already finished and reset state to .idle, do NOT overwrite
@@ -2211,22 +2248,44 @@ import MumblurCore
 
 @main
 struct MumblurApp: App {
-    @StateObject private var coordinator = AppCoordinator()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarContent(coordinator: coordinator)
-                .task { await coordinator.bootstrap() }
+            MenuBarContent(coordinator: delegate.coordinator)
         } label: {
-            Image(systemName: coordinator.icon)
-                .symbolRenderingMode(.hierarchical)
+            CoordinatorIcon(coordinator: delegate.coordinator)
         }
         .menuBarExtraStyle(.menu)
     }
 }
+
+/// SwiftUI's MenuBarExtra content closure only mounts when the user opens the
+/// menu (and may mount multiple times). Bootstrap must happen on app launch via
+/// an AppDelegate, not via `.task` on the menu content.
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    let coordinator = AppCoordinator()
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        Task { await coordinator.bootstrap() }
+    }
+}
+
+/// The label closure renders the always-visible menu bar icon. We split this
+/// into its own view so `@ObservedObject` triggers redraws when `coordinator.icon`
+/// changes (the label closure itself does not have view identity to observe state).
+struct CoordinatorIcon: View {
+    @ObservedObject var coordinator: AppCoordinator
+
+    var body: some View {
+        Image(systemName: coordinator.icon)
+            .symbolRenderingMode(.hierarchical)
+    }
+}
 ```
 
-(`AppCoordinator.bootstrap()` calls `tryStartHotkey()` itself once permissions are granted; the `.task` modifier is the canonical SwiftUI hook for async work on view appearance and respects the `@StateObject`'s lifecycle.)
+`AppCoordinator.bootstrap()` calls `tryStartHotkey()` itself once permissions are granted. The `AppDelegate` pattern is the canonical SwiftUI-on-macOS lifecycle hook for menu-bar apps; `applicationDidFinishLaunching` fires once at process start regardless of whether the user ever opens the menu.
 
 - [ ] **Step 4: Re-generate the Xcode project**
 
