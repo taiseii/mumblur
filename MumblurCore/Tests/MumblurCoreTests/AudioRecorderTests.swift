@@ -62,11 +62,15 @@ final class FakeAudioRecorder: AudioRecording, @unchecked Sendable {
     private var chunks: [[Float]] = []
     private var active: Bool = false
     var simulateStopError: Bool = false
+    var startCount: Int = 0
+    var stopCount: Int = 0
+    var abortCount: Int = 0
 
     func start() throws {
         if active { throw NSError(domain: "FakeAudioRecorder", code: 1) }
         chunks = []
         active = true
+        startCount += 1
     }
 
     func push(_ samples: [Float]) {
@@ -75,6 +79,7 @@ final class FakeAudioRecorder: AudioRecording, @unchecked Sendable {
     }
 
     func stop() -> [Float] {
+        stopCount += 1
         guard active else { return [] }
         active = false
         if simulateStopError {
@@ -89,5 +94,6 @@ final class FakeAudioRecorder: AudioRecording, @unchecked Sendable {
     func abortIfActive() {
         active = false
         chunks = []
+        abortCount += 1
     }
 }
