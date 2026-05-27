@@ -77,7 +77,7 @@ A single foreground macOS app (`Mumblur.app`) with `LSUIElement = true` in `Info
 
 ### 5.2 Project layout (best-practice fit)
 
-Two Swift modules — a thin app shell and a testable core package. This separation is the standard pattern for production Swift macOS apps: the core compiles and tests in seconds with `swift test`, has zero AppKit/SwiftUI dependencies, and each unit is reasoned about in isolation. The app target stays small and concrete (SwiftUI scenes + permission UX + lifecycle).
+Two Swift modules — a thin app shell and a testable core package. This separation is the standard pattern for production Swift macOS apps: the core compiles and tests in seconds with `swift test`, has **no SwiftUI and no app-lifecycle code**, and each unit is reasoned about in isolation. (The core does depend on AppKit-level APIs such as `NSPasteboard` and `AVFoundation`; "no AppKit" would be wrong to claim. The contract is "no UI scenes, no `@main`, no `NSApplication`/`MenuBarExtra` references" — testable units only.)
 
 ```
 mumbler/                              # repo root (keep name to preserve git history)
@@ -149,17 +149,19 @@ public final class AudioRecorder: AudioRecording, @unchecked Sendable {
 **`Paster`**
 ```swift
 public protocol Pasting: Sendable {
-    func paste(_ text: String)
+    func paste(_ text: String) async   // async because AppKit hop is required
 }
 
+@MainActor
 public struct Paster: Pasting {
     public init()
-    public func paste(_ text: String)   // no-op on empty/whitespace
+    public func paste(_ text: String)   // synchronous on MainActor; protocol awaits it
 }
 ```
+- `@MainActor`-isolated: `NSPasteboard` is AppKit, which Apple's thread-safety docs do not declare broadly safe for background use. Pasteboard reads/writes and synthesized events conventionally run on main.
 - Writes `text` to `NSPasteboard.general` (`clearContents()` then `setString(_:forType: .string)`).
 - Synthesizes ⌘V via `CGEvent(keyboardEventSource:virtualKey:keyDown:)` for `kVK_ANSI_V` with `.maskCommand`, posted to `CGEventTapLocation.cghidEventTap`.
-- No subprocess shelling out to `pbcopy`.
+- The worker awaits the `MainActor`-isolated call; this is a small, cheap hop.
 
 **`Transcriber`**
 ```swift
@@ -197,16 +199,18 @@ public struct HotkeyDispatcher: Sendable {
     public init(targetKeycode: CGKeyCode,
                 onPress: @escaping @Sendable () -> Void,
                 onRelease: @escaping @Sendable () -> Void)
-    public mutating func handle(keycode: CGKeyCode, modifierIsDown: Bool)
+    /// Call once per .flagsChanged event whose keycode matches `targetKeycode`.
+    /// The dispatcher toggles internal down-state and emits the right callback.
+    public mutating func handle(keycode: CGKeyCode)
 }
 ```
 
 **Detection algorithm** (treat as Tahoe-empirical, smoke-test required):
 - Install on `kCGSessionEventTap`, watching `CGEventMask(1 << CGEventType.flagsChanged.rawValue)`.
-- For each event: check `event.type == .flagsChanged`; read `event.flags.contains(.maskAlternate)` to get current modifier state; read keycode via `event.getIntegerValueField(.keyboardEventKeycode)`.
-- If keycode == 0x3D (kVK_RightOption):
-  - Compare `modifierIsDown` to the dispatcher's previous state; emit `press` on transition `up → down`, `release` on transition `down → up`. No emit on no-change.
-- Note: `keyboardEventKeycode` on `flagsChanged` is empirically correct on every macOS version we've tested but is not formally documented for this event type. Manual smoke test on Tahoe is a required Definition-of-Done item.
+- For each event: check `event.type == .flagsChanged`; read keycode via `event.getIntegerValueField(.keyboardEventKeycode)`.
+- The dispatcher maintains a `Set<CGKeyCode>` of currently-down modifier keys. Each `flagsChanged` event for a tracked keycode **toggles** that key's membership in the set: if the keycode was not present → emit `press` and insert; if it was present → emit `release` and remove.
+- We do **not** use `event.flags.contains(.maskAlternate)` to decide press vs release: that aggregate flag reflects "any Option key down" and cannot distinguish Right Option from Left Option. With Left Option already held, a Right Option transition would not flip the aggregate bit. Per-keycode toggle tracking is the only reliable approach.
+- Note: `keyboardEventKeycode` on `flagsChanged` is empirically correct on every macOS version we've tested but is not formally documented for this event type. Manual smoke test on Tahoe — including a "Left Option held, then Right Option tapped" scenario — is a required Definition-of-Done item.
 
 **`Runner`**
 ```swift
@@ -229,38 +233,53 @@ public final class Runner: @unchecked Sendable {
 }
 ```
 
-- Internal `OSAllocatedUnfairLock<MutableState>` (Swift-safe replacement for raw `os_unfair_lock`) guards state transitions and `pressTime`. `MutableState` is a tiny struct holding `state` + `pressTime`.
-- `onRelease` immediately transitions `recording → stopping` *before* calling `recorder.stop()`. This closes the TOCTOU window: a press arriving while we're stopping the recorder finds state `stopping` and is rejected.
-- After `stop()` and the min-hold check, transition `stopping → idle` (short press) or `stopping → transcribing`. The `transcribing` state is entered *before* the `Task` is spawned, and only the worker task can transition out of it.
-- `Task { ... }` is the worker. Single-flight is enforced by the state machine (`onPress` rejects anything not `idle`), not by GCD serialization.
+- Internal `OSAllocatedUnfairLock<MutableState>` (Swift-safe replacement for raw `os_unfair_lock`) guards a small struct:
+  ```swift
+  private struct MutableState {
+      var state: State = .idle
+      var pressTime: Date = .distantPast
+      var worker: Task<Void, Never>? = nil
+  }
+  ```
+- `onRelease` immediately transitions `recording → stopping` *and* captures `pressTime` while still holding the lock, before calling `recorder.stop()`. This closes the TOCTOU window and respects the lock invariant: `pressTime` is read inside the same critical section that transitions out of `.recording`.
+- After `stop()` and the min-hold check (using the snapshotted `pressTime`), transition `stopping → idle` (short press) or `stopping → transcribing`. The `transcribing` state is entered *before* the `Task` is spawned, and only the worker task can transition out of it.
+- The worker task is created via `Task.detached(priority: .userInitiated)` to avoid inheriting the caller's actor context, and its handle is stored in `MutableState.worker` so `shutdown()` can `cancel()` it. Inside the worker, the paste step checks `Task.isCancelled` before pasting; a cancelled worker skips paste and still transitions back to `.idle`.
+- Single-flight is enforced by the state machine (`onPress` rejects anything not `.idle`), not by GCD serialization.
 
 **`PermissionGate`**
 ```swift
 public enum PermissionResult: Sendable { case granted, denied, prompted }
 
 public enum PermissionGate {
-    /// Returns the *current* trust state. If `prompt` is true and trust is missing,
-    /// also triggers macOS' Accessibility dialog (which is async — the user grants
-    /// after the call returns).
+    /// Returns the *current* Accessibility trust state. If `prompt` is true and trust
+    /// is missing, also triggers macOS' Accessibility dialog (async — the user grants
+    /// after this call returns).
     public static func ensureAccessibility(prompt: Bool) -> PermissionResult
+
+    /// Returns the *current* Input Monitoring trust state. If `prompt` is true and
+    /// the state is `.notDetermined`, triggers `IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)`
+    /// which causes macOS to add the app to Input Monitoring and pop a dialog. Like
+    /// Accessibility, this is async and we must re-check.
+    public static func ensureInputMonitoring(prompt: Bool) -> PermissionResult
 
     /// Async — pops AVCaptureDevice's mic dialog and awaits the user's choice.
     public static func ensureMicrophone() async -> PermissionResult
 }
 ```
 
-Important Apple-documented behavior: `AXIsProcessTrustedWithOptions(...)` returns the *current* trust state immediately. Passing the prompt option triggers macOS' dialog as a side effect, but the return value does *not* reflect the user's eventual choice. Consequence (used in §5.5):
+Important Apple-documented behavior: `AXIsProcessTrustedWithOptions(...)` and `IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)` both return the *current* trust state immediately. Passing the prompt option triggers macOS' dialog as a side effect, but the return value does *not* reflect the user's eventual choice. Consequence (used in §5.5):
 
-- We cannot wait for the call to "become true" by calling it again in the same code path.
-- We must re-check trust on app activation (`NSApplication.didBecomeActiveNotification`) or via a periodic timer, and start the event tap once trust transitions to true.
+- We cannot wait for the call to "become true" in the same code path.
+- We must re-check trust via a **mandatory 2 s repeating timer** (not just activation events — see §5.5) and start the event tap once both Accessibility *and* Input Monitoring transition to granted.
 
 ### 5.4 Data flow
 
 ```
 [Mumblur.app launch — MainActor]
-   await PermissionGate.ensureMicrophone()                ▸ AVCaptureDevice prompt
-   accTrust = PermissionGate.ensureAccessibility(prompt: true)
-   transcriber = try await Transcriber(modelName: "large-v3-turbo", language: nil)
+   await PermissionGate.ensureMicrophone()                       ▸ AVCaptureDevice prompt
+   accTrust  = PermissionGate.ensureAccessibility(prompt: true)
+   imTrust   = PermissionGate.ensureInputMonitoring(prompt: true)
+   transcriber = try await Transcriber(modelName: resolvedModelName, language: nil)
    recorder    = try AudioRecorder()
    runner      = Runner(recorder, transcriber, paster, minHoldMs: 200,
                         onStateChange: { state in
@@ -272,8 +291,12 @@ Important Apple-documented behavior: `AXIsProcessTrustedWithOptions(...)` return
                     case .release: runner.onRelease()
                     }
                  }
-   if accTrust == .granted { try hotkey.start() }
-   else { coordinator.showPermissionWarning(); poll-on-activation re-checks accTrust }
+   if accTrust == .granted && imTrust == .granted {
+       try hotkey.start()
+   } else {
+       coordinator.showPermissionWarning()
+       startPermissionPollTimer()   // mandatory 2 s repeating; not just activation events
+   }
 
 [Right Option pressed — event tap thread]
    hotkey emits .press → runner.onPress()
@@ -283,26 +306,35 @@ Important Apple-documented behavior: `AXIsProcessTrustedWithOptions(...)` return
 
 [Right Option released — event tap thread]
    hotkey emits .release → runner.onRelease()
-     ▸ lock { if state != .recording, return; state = .stopping }    // closes TOCTOU
+     ▸ snapshot = lock { (s: State, t: Date) in
+                     guard state == .recording else { return nil }
+                     state = .stopping             // closes TOCTOU
+                     return (state: .stopping, pressTime: pressTime)
+                  }
+     ▸ guard snapshot != nil else { return }
      ▸ samples = recorder.stop()
-     ▸ heldMs  = (clock() - pressTime).milliseconds
+     ▸ heldMs  = (clock() - snapshot.pressTime).milliseconds
      ▸ if heldMs < minHoldMs:
          lock { state = .idle }
          onStateChange(.idle); return
-     ▸ lock { state = .transcribing }; onStateChange(.transcribing)
-     ▸ Task.detached(priority: .userInitiated) { await runner.doWork(samples) }
+     ▸ task = Task.detached(priority: .userInitiated) { await runner.doWork(samples) }
+     ▸ lock { state = .transcribing; worker = task }
+     ▸ onStateChange(.transcribing)
 
 [Worker task — detached Task]
    doWork(samples) async {
      defer {
-       lock { state = .idle }
+       lock { state = .idle; worker = nil }
        onStateChange(.idle)
      }
      do {
        let text = try await transcriber.transcribe(samples)
-       if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-           paster.paste(text)
-       }
+       guard !Task.isCancelled,
+             !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+       else { return }
+       await paster.paste(text)         // hops to MainActor (Paster is @MainActor)
+     } catch is CancellationError {
+       Logger.runner.debug("worker cancelled")
      } catch {
        Logger.transcribe.error("transcription failed: \(error)")
      }
@@ -317,19 +349,26 @@ Important Apple-documented behavior: `AXIsProcessTrustedWithOptions(...)` return
 
 ### 5.5 Permission flow
 
-The fundamental difference from the Python version. Because `Mumblur.app` is a signed bundle with a stable identity, TCC can track it reliably.
+The fundamental difference from the Python version. Because `Mumblur.app` is a signed bundle with a stable identity, TCC can track it reliably. Three permissions are required:
 
-1. **Microphone (sync, awaits user):** `await PermissionGate.ensureMicrophone()` calls `AVCaptureDevice.requestAccess(for: .audio)`. macOS reads `NSMicrophoneUsageDescription` from `Info.plist` and presents the dialog. The call awaits the user's choice.
+1. **Microphone** (`NSMicrophoneUsageDescription` in `Info.plist`) — sync, awaits user. `await PermissionGate.ensureMicrophone()` calls `AVCaptureDevice.requestAccess(for: .audio)`; macOS presents the dialog and the call awaits the user's choice.
 
-2. **Accessibility (async, fire-and-forget prompt):** `PermissionGate.ensureAccessibility(prompt: true)` calls `AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt: kCFBooleanTrue])`. The prompt fires; the call returns the *current* (pre-grant) trust state immediately.
+2. **Accessibility** — async, fire-and-forget prompt. `PermissionGate.ensureAccessibility(prompt: true)` calls `AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt: kCFBooleanTrue])`. The prompt fires; the call returns the *current* (pre-grant) trust state immediately. Needed for `CGEventTap` and for synthesizing ⌘V.
 
-3. **Decision tree:**
-   - If `.granted`: start the event tap, hide any warning UI.
-   - If `.denied` (the realistic "not yet granted" state for first launch): show a warning badge on the menu bar icon; menu drop-down shows a "Grant Permissions…" item that re-runs the prompt and deep-links to System Settings via `NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)`.
+3. **Input Monitoring** — async, fire-and-forget prompt. `PermissionGate.ensureInputMonitoring(prompt: true)` calls `IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)` if state is `.notDetermined`, then `IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)`. Returns the current state. **Required on macOS 14+ for global keyboard event monitoring**, in addition to Accessibility. (Accessibility alone is necessary but not sufficient for `CGEventTap` watching keyboard events on modern macOS.)
 
-4. **Re-check on activation:** observe `NSApplication.didBecomeActiveNotification` (or run a 2 s repeating timer while in a denied state). Each tick re-calls `AXIsProcessTrusted()` (without prompt). On `denied → granted` transition: call `hotkey.start()`, hide warning, stop the timer.
+#### Decision tree
 
-This design tolerates the OS dialog's async nature: the user clicks Allow in System Settings, returns to Mumblur, the activation event fires, we detect the new grant, the listener starts.
+- If all three granted on launch: start the event tap, hide any warning UI.
+- If any denied (the realistic "not yet granted" state for first launch): show a warning badge on the menu bar icon; menu drop-down shows a "Grant Permissions…" item that re-runs the prompts and deep-links to the right System Settings pane via `NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_<Pane>")!)`. Pane names: `Privacy_Accessibility`, `Privacy_ListenEvent` (Input Monitoring), `Privacy_Microphone`.
+
+#### Re-check loop (mandatory 2 s repeating timer)
+
+We **cannot** rely on `NSApplication.didBecomeActiveNotification` alone: `Mumblur.app` is `LSUIElement = true`, so it does not become "active" in the normal sense when the user returns from System Settings (they were never in another regular app — they were in System Settings, then back to whatever they were in before, and Mumblur is just a menu bar item that doesn't get activated). The activation notification fires inconsistently for menu-bar-only apps.
+
+Mandatory pattern: while any permission is denied, run a `Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true)`. Each tick re-checks all three permissions *without* prompting. On the first tick where all three are granted: call `hotkey.start()`, hide the warning, invalidate the timer. Activation observation is added as a *supplementary* trigger (it speeds up the happy case) but is not load-bearing.
+
+This design tolerates the OS dialog's async nature regardless of whether the user returns to Mumblur through a "real" activation.
 
 ### 5.6 Ad-hoc signing and dev-iteration friction
 
@@ -350,7 +389,8 @@ Verified against argmax-oss-swift v1.0+:
 
 - Package: `https://github.com/argmaxinc/argmax-oss-swift` (SwiftPM dependency on `MumblurCore`).
 - Import: `import WhisperKit`.
-- Init: `WhisperKit(WhisperKitConfig(model: "large-v3-turbo"))` — exact model identifier resolved at plan stage by enumerating `argmaxinc/whisperkit-coreml`. Fallback: `"large-v3"` with a warning if the turbo variant cannot be resolved.
+- Init: `WhisperKit(WhisperKitConfig(model: resolvedModelName))`. `resolvedModelName` is determined at runtime by calling `WhisperKit.fetchAvailableModels()` (or, if too slow on cold launch, by pinning a known-current identifier and validating). Argmax's published identifiers are date-suffixed and turbo-suffixed — current shape as of 2026-05 is `openai_whisper-large-v3-v20240930_turbo_632MB` on `argmaxinc/whisperkit-coreml`. The plan stage will pin the exact name. The string `"large-v3-turbo"` is **not** a valid published identifier and must not be used as-is.
+- Fallback chain if the preferred turbo identifier cannot be resolved: try `"large-v3"` family, log a warning, continue.
 - Inference:
   ```swift
   let options = DecodingOptions(
@@ -433,17 +473,17 @@ Errors and lifecycle events go through `Logger`. `print` and `NSLog` are not use
 - **`actor`**: `Transcriber` — only this type owns the WhisperKit instance.
 - **`OSAllocatedUnfairLock<MutableState>`** (from `os`, Swift-safe): used inside `Runner` to guard the small mutable struct (`state`, `pressTime`). Why not an actor: actors serialize via async hops, which would force `onPress`/`onRelease` to become `async` and complicate the event-tap callback chain (which is a synchronous C callback). The lock is held for nanoseconds; this is the canonical Apple-blessed Swift-safe path for tiny shared state. Raw `os_unfair_lock` is *not* used (Apple explicitly warns against using it from Swift).
 - **`@Sendable`** annotations on all callback closures crossing concurrency domains.
-- **`Task.detached(priority: .userInitiated)`** for the transcription worker — does *not* inherit any actor context; we don't want it implicitly hopping back to the listener thread.
+- **`Task.detached(priority: .userInitiated)`** for the transcription worker — does *not* inherit any actor context; we don't want it implicitly hopping back to the listener thread. The task **handle is stored** in `Runner.MutableState.worker` so `shutdown()` can `cancel()` it. The worker checks `Task.isCancelled` before pasting; cancelled workers still transition state back to `.idle` via `defer`.
 - **`@unchecked Sendable`** is used (sparingly) on `AudioRecorder`, `Hotkey`, and `Runner` to declare the types safe to pass across isolation boundaries; each has an internal lock or actor boundary that justifies the claim. WhisperKit is *not* declared Sendable; it's only ever touched from inside `actor Transcriber`.
 
 ## 12. Open questions (deferred to plan, not blocking)
 
-1. **Exact WhisperKit model identifier for large-v3-turbo.** Resolved at plan stage by checking `argmaxinc/whisperkit-coreml`'s current model list.
+1. **Exact WhisperKit model identifier for large-v3-turbo.** Resolved at plan stage by calling `WhisperKit.fetchAvailableModels()` or by checking `argmaxinc/whisperkit-coreml`'s current model list. Tentative pin: `openai_whisper-large-v3-v20240930_turbo_632MB`.
 2. **WhisperKit return shape.** `transcribe(audioArray:)` returns `[TranscriptionResult]` per most recent docs; confirm by reading `WhisperKit.swift` at the version we pin.
 3. **Slow-test skip mechanism.** Environment variable, separate test plan, or scheme — picked at plan stage.
 4. **Menu bar icon animation during transcribing.** Static SF Symbol vs SwiftUI `.symbolEffect(.variableColor.iterative)`. Plan picks one.
 5. **App sandbox.** Off in v1 for simplicity. If we want sandboxing later, we'd add `com.apple.security.app-sandbox` and `com.apple.security.network.client` (for WhisperKit's model download).
-6. **Accessibility re-check cadence.** Activation event observation only, or activation + 2 s timer fallback. Plan picks one based on whether the activation event is reliable enough in practice.
+6. **Input Monitoring API call shape.** Whether `IOHIDRequestAccess` and `IOHIDCheckAccess` need to be called directly via `IOKit`/`IOKit.hid.usage` imports, or whether there's a higher-level Swift wrapper. Plan stage verifies the exact import set.
 
 ## 13. Definition of Done
 
