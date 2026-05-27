@@ -37,7 +37,7 @@ A local push-to-talk dictation tool for macOS Apple Silicon, distributed as `Mum
 - Record-then-transcribe: on release, the buffer is handed to WhisperKit, then the result is pasted at the cursor via `NSPasteboard` + a synthesized ⌘V `CGEvent`.
 - WhisperKit with a `large-v3-turbo` Core ML model from `argmaxinc/whisperkit-coreml`, auto-downloaded on first launch.
 - Multilingual auto-detect (`DecodingOptions(language: nil, detectLanguage: true, usePrefillPrompt: true)`).
-- OS-native permission prompts for Microphone and Accessibility; menu bar reflects permission state and offers a one-click open-System-Settings shortcut when grants are missing.
+- OS-native permission prompts for Microphone, Accessibility, **and Input Monitoring** (required by `CGEventTap` on macOS 14+). Menu bar reflects permission state and offers a one-click open-System-Settings shortcut when any grant is missing. A mandatory 2 s re-check timer fires while any permission is denied.
 - Locked state machine with single-flight semantics — `idle → recording → stopping → transcribing → idle` — and a `Task`-based pipeline for transcribe + paste so the state machine, not GCD, provides the single-flight gate.
 
 ### Out of scope (v1)
@@ -317,8 +317,17 @@ Important Apple-documented behavior: `AXIsProcessTrustedWithOptions(...)` and `I
      ▸ if heldMs < minHoldMs:
          lock { state = .idle }
          onStateChange(.idle); return
+     ▸ lock { state = .transcribing }
      ▸ task = Task.detached(priority: .userInitiated) { await runner.doWork(samples) }
-     ▸ lock { state = .transcribing; worker = task }
+     // doWork may run and complete before we store the handle below.
+     // If it already transitioned state back to .idle, don't overwrite —
+     // cancel the (already-finished) task as a no-op and leave state alone.
+     ▸ shouldCancel = lock {
+           guard state == .transcribing else { return true }
+           worker = task
+           return false
+       }
+     ▸ if shouldCancel { task.cancel() }
      ▸ onStateChange(.transcribing)
 
 [Worker task — detached Task]
@@ -488,7 +497,7 @@ Errors and lifecycle events go through `Logger`. `print` and `NSLog` are not use
 ## 13. Definition of Done
 
 - `Mumblur.app` builds via `scripts/build_app.sh` and installs to `/Applications/`.
-- First launch prompts for Microphone (sync, awaited) and triggers the Accessibility prompt (async). After the user grants Accessibility, the app picks up the new trust state via the activation re-check and starts the event tap without requiring a relaunch.
+- First launch prompts for Microphone (sync, awaited), Accessibility (async), and Input Monitoring (async). After the user grants the missing permissions in System Settings, the mandatory 2 s re-check timer picks up the new state (`AXIsProcessTrusted` + `IOHIDCheckAccess`) and starts the event tap without requiring a relaunch.
 - Holding Right Option for ≥ 200 ms while speaking, then releasing, pastes the transcript at the cursor in any focused app within roughly decode time (≤ 1 s for short utterances on M3 Max).
 - Menu bar icon transitions visibly between idle / recording / transcribing / warning states.
 - Pressing Right Option during `recording`, `stopping`, or `transcribing` is rejected; log shows the rejection; in-flight transcription completes and pastes.
