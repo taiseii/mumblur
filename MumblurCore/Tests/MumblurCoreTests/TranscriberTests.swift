@@ -60,19 +60,38 @@ final class TranscriberTests: XCTestCase {
 }
 
 /// Helper exposed for tests. Loads a 16 kHz mono PCM WAV into [Float].
+/// Walks RIFF chunks to find `data` — `afconvert` can emit a `FLLR` padding
+/// chunk before `data`, so the legacy 44-byte header assumption is wrong.
 func loadWavFloatMono16kHz(url: URL) throws -> [Float] {
     let data = try Data(contentsOf: url)
-    // WAV header is 44 bytes; data is signed 16-bit LE PCM mono after that.
-    guard data.count > 44 else { return [] }
-    let pcm = data.subdata(in: 44..<data.count)
-    var out = [Float](repeating: 0, count: pcm.count / 2)
-    pcm.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-        let ptr = raw.bindMemory(to: Int16.self)
-        for i in 0..<out.count {
-            out[i] = Float(ptr[i]) / 32768.0
+    guard data.count >= 12,
+          data.subdata(in: 0..<4) == Data("RIFF".utf8),
+          data.subdata(in: 8..<12) == Data("WAVE".utf8)
+    else { return [] }
+
+    var i = 12
+    while i + 8 <= data.count {
+        let id = data.subdata(in: i..<(i + 4))
+        let size = data.subdata(in: (i + 4)..<(i + 8)).withUnsafeBytes { raw in
+            raw.load(as: UInt32.self).littleEndian
         }
+        let payloadStart = i + 8
+        let payloadEnd = payloadStart + Int(size)
+        if id == Data("data".utf8) {
+            guard payloadEnd <= data.count else { return [] }
+            let pcm = data.subdata(in: payloadStart..<payloadEnd)
+            var out = [Float](repeating: 0, count: pcm.count / 2)
+            pcm.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                let ptr = raw.bindMemory(to: Int16.self)
+                for i in 0..<out.count {
+                    out[i] = Float(ptr[i]) / 32768.0
+                }
+            }
+            return out
+        }
+        i = payloadEnd + (Int(size) & 1) // RIFF chunks are word-aligned
     }
-    return out
+    return []
 }
 
 /// Fake conforming to WhisperKitTranscribing.

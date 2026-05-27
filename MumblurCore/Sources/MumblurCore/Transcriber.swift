@@ -58,7 +58,12 @@ public final class RealWhisperKit: WhisperKitTranscribing, @unchecked Sendable {
     private static func resolveModelName(preferred: String?) async throws -> String {
         let available = try await WhisperKit.fetchAvailableModels()
         if let preferred, available.contains(preferred) { return preferred }
-        // Prefer a turbo variant by name substring; fall back to the largest large-v3.
+        // Prefer openai_whisper turbo (multilingual) over distil-whisper turbo (en-only).
+        if let openaiTurbo = available.first(where: {
+            $0.lowercased().contains("turbo") && !$0.lowercased().contains("distil")
+        }) {
+            return openaiTurbo
+        }
         if let turbo = available.first(where: { $0.lowercased().contains("turbo") }) {
             return turbo
         }
@@ -73,19 +78,28 @@ public final class RealWhisperKit: WhisperKitTranscribing, @unchecked Sendable {
         )
     }
 
+    /// Whisper operates on 30s chunks; WhisperKit does NOT auto-pad short audio,
+    /// so we pad here. Also, `TranscriptionSegment.text` includes special tokens
+    /// (e.g. `<|startoftranscript|>`) — we use the cleaned `result.text` instead.
     public func transcribe(audioArray: [Float],
                            language: String?,
                            detectLanguage: Bool) async throws -> [any WhisperKitSegment] {
+        let chunk = 16_000 * 30
+        let padded: [Float]
+        if audioArray.count < chunk {
+            padded = audioArray + [Float](repeating: 0, count: chunk - audioArray.count)
+        } else {
+            padded = audioArray
+        }
         let options = DecodingOptions(
             language: language,
-            usePrefillPrompt: true,
             detectLanguage: detectLanguage
         )
-        let results = try await pipeline.transcribe(audioArray: audioArray,
+        let results = try await pipeline.transcribe(audioArray: padded,
                                                     decodeOptions: options)
-        // `results` is [TranscriptionResult]; flatten its segments.
-        return results.flatMap { result in
-            result.segments.map { Segment(text: $0.text) }
+        return results.compactMap { result -> (any WhisperKitSegment)? in
+            let clean = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return clean.isEmpty ? nil : Segment(text: clean)
         }
     }
 
