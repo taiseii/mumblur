@@ -1,0 +1,19 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Models (large binary files)
+models/
+*.bin
+
+# Test artifacts
+.pytest_cache/
+__pycache__/
+*.pyc
