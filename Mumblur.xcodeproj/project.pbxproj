@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		06AA7449C5AFDBF640AD5DA7 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5A65D77A6B5AF2848CDD8F5A /* Assets.xcassets */; };
 		B8E993C2CB119F12820D4D47 /* MumblurApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B75E5E2815C39ACA17B34F7 /* MumblurApp.swift */; };
+		DD1C813F6E33AD8187265896 /* MenuBarContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4924377E2F41E7E54C12381 /* MenuBarContent.swift */; };
+		E2C268270E50738EB7ED21F8 /* AppCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F66F159320BB9975C86FF316 /* AppCoordinator.swift */; };
 		F8B5F8CA655C02E293E271F2 /* MumblurCore in Frameworks */ = {isa = PBXBuildFile; productRef = 9AAEAE192381C0EF46222E30 /* MumblurCore */; };
 /* End PBXBuildFile section */
 
@@ -17,6 +19,8 @@
 		2B75E5E2815C39ACA17B34F7 /* MumblurApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MumblurApp.swift; sourceTree = "<group>"; };
 		4E39634789368D6E48ED70FC /* Mumblur.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Mumblur.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		5A65D77A6B5AF2848CDD8F5A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		E4924377E2F41E7E54C12381 /* MenuBarContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarContent.swift; sourceTree = "<group>"; };
+		F66F159320BB9975C86FF316 /* AppCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoordinator.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -67,6 +71,8 @@
 		E6FA1E7B1DAD7AC6CBD01AB3 /* App */ = {
 			isa = PBXGroup;
 			children = (
+				F66F159320BB9975C86FF316 /* AppCoordinator.swift */,
+				E4924377E2F41E7E54C12381 /* MenuBarContent.swift */,
 				2B75E5E2815C39ACA17B34F7 /* MumblurApp.swift */,
 				3BF94A3890525C7F560CFD51 /* Resources */,
 			);
@@ -148,6 +154,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E2C268270E50738EB7ED21F8 /* AppCoordinator.swift in Sources */,
+				DD1C813F6E33AD8187265896 /* MenuBarContent.swift in Sources */,
 				B8E993C2CB119F12820D4D47 /* MumblurApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
