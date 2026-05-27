@@ -318,6 +318,7 @@ Important Apple-documented behavior: `AXIsProcessTrustedWithOptions(...)` and `I
          lock { state = .idle }
          onStateChange(.idle); return
      ▸ lock { state = .transcribing }
+     ▸ onStateChange(.transcribing)   // fire BEFORE spawn so doWork's later .idle is always observed second
      ▸ task = Task.detached(priority: .userInitiated) { await runner.doWork(samples) }
      // doWork may run and complete before we store the handle below.
      // If it already transitioned state back to .idle, don't overwrite —
@@ -327,8 +328,7 @@ Important Apple-documented behavior: `AXIsProcessTrustedWithOptions(...)` and `I
            worker = task
            return false
        }
-     ▸ if shouldCancel { task.cancel() }
-     ▸ onStateChange(.transcribing)
+     ▸ if shouldCancel { task.cancel() }  // no extra onStateChange; doWork already emitted .idle
 
 [Worker task — detached Task]
    doWork(samples) async {
