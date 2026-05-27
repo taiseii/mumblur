@@ -66,17 +66,6 @@ final class AppCoordinator: ObservableObject {
         NSApplication.shared.terminate(nil)
     }
 
-    var icon: String {
-        switch uiState {
-        case .loadingModel:     return "hourglass"
-        case .idle:             return "mic"
-        case .recording:        return "mic.fill"
-        case .transcribing:     return "waveform"
-        case .permissionNeeded: return "exclamationmark.triangle"
-        case .fatalError:       return "exclamationmark.octagon"
-        }
-    }
-
     // MARK: - Private
 
     private func tryStartHotkey() {
