@@ -158,6 +158,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[mumbler] unknown hotkey: {args.hotkey!r}", file=sys.stderr)
         return 2
 
+    # On macOS, pynput's listener silently fails (only prints to stderr) when
+    # Accessibility isn't granted. Detect this upfront so the user gets a clean
+    # actionable error instead of a half-running daemon that never receives keys.
+    if getattr(keyboard.Listener, "IS_TRUSTED", True) is False:
+        print(
+            "[mumbler] missing macOS Accessibility permission.\n"
+            "  Grant it in System Settings → Privacy & Security → Accessibility\n"
+            "  for the terminal app running mumbler, then fully quit and relaunch\n"
+            "  the terminal (the permission is captured at launch).",
+            file=sys.stderr,
+        )
+        return 3
+
     print(f"[mumbler] loading model {args.model!r}…", file=sys.stderr)
     transcriber = Transcriber(args.model, language=args.language)
     recorder = AudioRecorder()
