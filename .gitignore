@@ -17,3 +17,11 @@ models/
 .pytest_cache/
 __pycache__/
 *.pyc
+
+# Swift / Xcode build artifacts
+.build/
+build/
+DerivedData/
+Mumblur.xcodeproj/xcuserdata/
+Mumblur.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcuserstate

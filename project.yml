@@ -1,0 +1,42 @@
+name: Mumblur
+options:
+  bundleIdPrefix: world.questable
+  deploymentTarget:
+    macOS: "14.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEAD_CODE_STRIPPING: YES
+packages:
+  MumblurCore:
+    path: MumblurCore
+targets:
+  Mumblur:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: App
+        excludes:
+          - Resources/Info.plist
+          - Resources/Mumblur.entitlements
+    resources:
+      - path: App/Resources/Assets.xcassets
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: world.questable.mumblur
+        PRODUCT_NAME: Mumblur
+        INFOPLIST_FILE: App/Resources/Info.plist
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_STRICT_CONCURRENCY: complete
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@executable_path/../Frameworks"
+    dependencies:
+      - package: MumblurCore
+        product: MumblurCore
