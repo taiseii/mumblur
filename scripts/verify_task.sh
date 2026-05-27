@@ -76,12 +76,15 @@ case "$TASK" in
     7)
         bash "$0" 6
         need_file README.md
+        # README must reference the actual model name and the runbook flags
         grep -q 'large-v3-turbo-q5_0' README.md || fail "README must reference large-v3-turbo-q5_0"
         grep -q -- '--hotkey' README.md       || fail "README must document --hotkey"
         grep -q -- '--min-hold-ms' README.md  || fail "README must document --min-hold-ms"
         ;;
     8)
         bash "$0" 7
+        # Manual smoke test gate. The runbook in Task 8 is checked off manually;
+        # we just confirm that the prior automated gates still hold.
         uv run pytest -v -m "not slow"
         ;;
     *)
