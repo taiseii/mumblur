@@ -16,6 +16,8 @@
 		4F6AAB7CDCC7F8AFCAB8D96C /* PermissionsCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06D892ABC34B5839488E304 /* PermissionsCoordinator.swift */; };
 		674EC2BDBDB487CC9E1DEC9E /* ModelsViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D3D795893967AB31AAFB0BB /* ModelsViewModelTests.swift */; };
 		68D07E4C605674E40E1B5752 /* DataSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 123F19652576C0FE6E5386C6 /* DataSettingsView.swift */; };
+		AAAA0000AAAA0000AAAA0001 /* AISettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA0000AAAA0000AAAA0002 /* AISettingsView.swift */; };
+		AAAA0000AAAA0000AAAA0003 /* AIViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA0000AAAA0000AAAA0004 /* AIViewModel.swift */; };
 		6F2B1FA79196C77F715A5FFA /* ProfilesViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEEC3D99E40CE718BF580BCE /* ProfilesViewModelTests.swift */; };
 		7C8CDEFA279EA18F48312D61 /* ModelsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFBB260BE1BAE03AB244B64C /* ModelsViewModel.swift */; };
 		9D95BA89A45B027901095D14 /* ModelsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CE477173C629B1EF91D7001 /* ModelsSettingsView.swift */; };
@@ -46,6 +48,8 @@
 /* Begin PBXFileReference section */
 		0133C9C1BF3F10A64707DFCD /* MumblurAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MumblurAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		123F19652576C0FE6E5386C6 /* DataSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataSettingsView.swift; sourceTree = "<group>"; };
+		AAAA0000AAAA0000AAAA0002 /* AISettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISettingsView.swift; sourceTree = "<group>"; };
+		AAAA0000AAAA0000AAAA0004 /* AIViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIViewModel.swift; sourceTree = "<group>"; };
 		14BA6F3690F7A5AA5E1005BE /* TuningViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TuningViewModel.swift; sourceTree = "<group>"; };
 		19CC9DA0D69B5D34A4AAB209 /* MumblurCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MumblurCore; path = MumblurCore; sourceTree = SOURCE_ROOT; };
 		2B75E5E2815C39ACA17B34F7 /* MumblurApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MumblurApp.swift; sourceTree = "<group>"; };
@@ -120,6 +124,7 @@
 			isa = PBXGroup;
 			children = (
 				F7D72DC5C49A03C692A82E75 /* DataViewModel.swift */,
+				AAAA0000AAAA0000AAAA0004 /* AIViewModel.swift */,
 				BFBB260BE1BAE03AB244B64C /* ModelsViewModel.swift */,
 				B28A3DD6A373ECD1E80FBBED /* ProfilesViewModel.swift */,
 				14BA6F3690F7A5AA5E1005BE /* TuningViewModel.swift */,
@@ -174,6 +179,7 @@
 			children = (
 				56F68699F968CEACC16ED90C /* AboutSettingsView.swift */,
 				123F19652576C0FE6E5386C6 /* DataSettingsView.swift */,
+				AAAA0000AAAA0000AAAA0002 /* AISettingsView.swift */,
 				E36DEB8603E2AAE38CD0D380 /* GeneralSettingsView.swift */,
 				8CE477173C629B1EF91D7001 /* ModelsSettingsView.swift */,
 				779A4BE56CF486C9F5421608 /* OpenSettingsTrampoline.swift */,
@@ -301,6 +307,8 @@
 				E2C268270E50738EB7ED21F8 /* AppCoordinator.swift in Sources */,
 				68D07E4C605674E40E1B5752 /* DataSettingsView.swift in Sources */,
 				32162AC1CEEF426E6623D9F5 /* DataViewModel.swift in Sources */,
+				AAAA0000AAAA0000AAAA0001 /* AISettingsView.swift in Sources */,
+				AAAA0000AAAA0000AAAA0003 /* AIViewModel.swift in Sources */,
 				E77A3E48A3E501345EF3D384 /* GeneralSettingsView.swift in Sources */,
 				DD1C813F6E33AD8187265896 /* MenuBarContent.swift in Sources */,
 				9D95BA89A45B027901095D14 /* ModelsSettingsView.swift in Sources */,
