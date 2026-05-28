@@ -152,6 +152,14 @@ case "$TASK" in
         grep -q 'func commit(snapshot:' MumblurCore/Sources/MumblurCore/Transcriber.swift
         core_test
         ;;
+    19)
+        bash "$0" 18
+        need_file MumblurCore/Sources/MumblurCore/ModelManager.swift
+        need_file MumblurCore/Tests/MumblurCoreTests/ModelManagerTests.swift
+        grep -q 'generation &+= 1' MumblurCore/Sources/MumblurCore/ModelManager.swift \
+            || fail "ModelManager missing generation guard"
+        core_test
+        ;;
     *)
         fail "unknown task: $TASK"
         ;;
