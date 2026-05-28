@@ -37,3 +37,18 @@ public struct LLMEditConfig: Equatable, Sendable {
         self.prompt = prompt
     }
 }
+
+public protocol TranscriptEditing: Sendable {
+    /// Best-effort cleanup. Returns `text` unchanged on any network/timeout/
+    /// parse failure, when globally disabled, or when unconfigured. Propagates
+    /// `CancellationError` so a cancelled worker never proceeds to paste.
+    func editFailOpen(_ text: String, instructions: String) async throws -> String
+}
+
+/// Default seam: identity. Used as the `Runner.init` default so existing call
+/// sites (incl. ~10 test sites) keep compiling, and as the production default
+/// until the real editor is injected.
+public struct NoOpEditor: TranscriptEditing {
+    public init() {}
+    public func editFailOpen(_ text: String, instructions: String) async throws -> String { text }
+}
