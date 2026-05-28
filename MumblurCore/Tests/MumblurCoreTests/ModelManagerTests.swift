@@ -99,3 +99,42 @@ final class ModelManagerTests: XCTestCase {
 private func throwingResult<T: Sendable>(_ body: @Sendable () async throws -> T) async -> Result<T, Error> {
     do { return .success(try await body()) } catch { return .failure(error) }
 }
+
+// MARK: - LLMEdit tests
+
+private struct FakeLLMTokenizer: Tokenizing { func encode(text: String) throws -> [Int] { [] } }
+private struct FakeLLMKit: WhisperKitTranscribing {
+    func transcribe(audioArray: [Float], language: String?, detectLanguage: Bool,
+                    promptTokens: [Int]?) async throws -> [any WhisperKitSegment] { [] }
+}
+private struct FakeLLMLoader: ModelLoading {
+    func load(modelID: String) async throws -> LoadedModel {
+        LoadedModel(kit: FakeLLMKit(), tokenizer: FakeLLMTokenizer())
+    }
+}
+
+final class ModelManagerLLMEditTests: XCTestCase {
+    private func profile(enabled: Bool, prompt: String?) -> Profile {
+        Profile(id: "p", name: "P", language: nil, modelID: "m",
+                initialPrompt: nil, vocab: [], rules: [],
+                llmEditEnabled: enabled, llmEditPrompt: prompt,
+                createdAt: Date(timeIntervalSince1970: 0),
+                updatedAt: Date(timeIntervalSince1970: 0), deletedAt: nil)
+    }
+
+    func testSnapshot_resolvesEnabledAndDefaultPrompt() async throws {
+        let mgr = ModelManager(loader: FakeLLMLoader(), transcriber: Transcriber())
+        let snapNilPrompt = try await mgr.requestSwap(to: profile(enabled: true, prompt: nil))
+        XCTAssertTrue(snapNilPrompt.llmEdit.enabled)
+        XCTAssertEqual(snapNilPrompt.llmEdit.prompt, LLMEditConfig.defaultPrompt)
+
+        let snapBlank = try await mgr.requestSwap(to: profile(enabled: true, prompt: "   "))
+        XCTAssertEqual(snapBlank.llmEdit.prompt, LLMEditConfig.defaultPrompt)
+
+        let snapCustom = try await mgr.requestSwap(to: profile(enabled: true, prompt: "Custom"))
+        XCTAssertEqual(snapCustom.llmEdit.prompt, "Custom")
+
+        let snapOff = try await mgr.requestSwap(to: profile(enabled: false, prompt: "x"))
+        XCTAssertFalse(snapOff.llmEdit.enabled)
+    }
+}

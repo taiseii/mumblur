@@ -46,10 +46,13 @@ public actor ModelManager {
             Logger.app.info("dropping stale swap generation=\(mine) current=\(self.generation)")
             throw ModelManagerError.staleSwap
         }
+        let trimmedPrompt = profile.llmEditPrompt?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let editPrompt = (trimmedPrompt?.isEmpty ?? true) ? LLMEditConfig.defaultPrompt : trimmedPrompt!
+        let llmEdit = LLMEditConfig(enabled: profile.llmEditEnabled, prompt: editPrompt)
         let snap = ServingSnapshot(
             profileID: profile.id, profileName: profile.name,
             modelID: profile.modelID, language: profile.language,
-            prompt: payload, rules: profile.rules)
+            prompt: payload, rules: profile.rules, llmEdit: llmEdit)
         await transcriber.commit(snapshot: snap, kit: model.kit)
         return snap
     }
