@@ -60,10 +60,12 @@ public actor SettingsStore {
         let updated = Date()
         try database.write { db in
             try db.execute(sql: """
-                UPDATE profile SET name=?, language=?, model_id=?, initial_prompt=?, updated_at=?
+                UPDATE profile SET name=?, language=?, model_id=?, initial_prompt=?,
+                                   llm_edit_enabled=?, llm_edit_prompt=?, updated_at=?
                 WHERE id=?
             """, arguments: [profile.name, profile.language, profile.modelID,
                              profile.initialPrompt,
+                             profile.llmEditEnabled ? 1 : 0, profile.llmEditPrompt,
                              Int64(updated.timeIntervalSince1970 * 1000),
                              profile.id])
         }
@@ -162,6 +164,8 @@ extension Profile {
             id: id,
             name: row["name"], language: row["language"], modelID: row["model_id"],
             initialPrompt: row["initial_prompt"], vocab: vocab, rules: rules,
+            llmEditEnabled: (row["llm_edit_enabled"] as Int) == 1,
+            llmEditPrompt: row["llm_edit_prompt"],
             createdAt: date(row["created_at"]),
             updatedAt: date(row["updated_at"]),
             deletedAt: (row["deleted_at"] as Int64?).map(date)

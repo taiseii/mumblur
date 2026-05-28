@@ -86,4 +86,16 @@ final class SettingsStoreTests: XCTestCase {
         let shown = try await store.get(profileID: a.id, includeDeleted: true)
         XCTAssertNotNil(shown)
     }
+
+    func testUpdate_roundTripsLLMEditFields() async throws {
+        let db = try AppDatabase(location: .inMemory)
+        let store = SettingsStore(database: db)
+        var p = try await store.create(name: "Work", modelID: "m")
+        p.llmEditEnabled = true
+        p.llmEditPrompt = "Tidy it up"
+        try await store.update(p)
+        let back = try await store.get(profileID: p.id)
+        XCTAssertEqual(back?.llmEditEnabled, true)
+        XCTAssertEqual(back?.llmEditPrompt, "Tidy it up")
+    }
 }
