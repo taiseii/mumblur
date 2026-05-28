@@ -115,6 +115,16 @@ case "$TASK" in
         grep -q 'GRDB.swift' MumblurCore/Package.swift || fail "GRDB not in Package.swift"
         core_test
         ;;
+    14)
+        bash "$0" 13
+        need_file MumblurCore/Sources/MumblurCore/Profile.swift
+        need_file MumblurCore/Sources/MumblurCore/ReplacementRule.swift
+        need_file MumblurCore/Sources/MumblurCore/PromptPayload.swift
+        need_file MumblurCore/Sources/MumblurCore/ServingSnapshot.swift
+        need_file MumblurCore/Sources/MumblurCore/TranscriptPostProcessor.swift
+        need_file MumblurCore/Tests/MumblurCoreTests/TranscriptPostProcessorTests.swift
+        core_test
+        ;;
     *)
         fail "unknown task: $TASK"
         ;;
