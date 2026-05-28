@@ -6,7 +6,37 @@
 
 **Architecture:** All persistence lives in `MumblurCore/Storage/` behind actor-wrapped stores around a single GRDB connection. The serving snapshot (profile + model + tokenized prompt + rules) is owned by the `Transcriber` actor; `ModelManager` swaps via a monotonic generation counter so a slow older load can never overwrite a newer one. The `Runner` pipeline now flows `record → Transcriber.transcribe → (rawText, snapshot) → post-process → paste → persist via snapshot` with audio (when retained) written via UUID-first write-then-insert-in-one-transaction and a launch-time orphan sweep. Calibration runs in a dedicated `CalibrationController` that suspends the global hotkey to keep ceremony recordings off the paste path. Settings is a native SwiftUI `Settings` scene with six sidebar tabs.
 
-**Tech Stack:** Swift 6 strict concurrency, macOS 14+, SwiftUI `MenuBarExtra`/`Settings` scene, GRDB.swift (new SPM dep), WhisperKit (existing), CryptoKit (system), Swift Charts (system), XCTest.
+**Tech Stack:** Swift 6 strict concurrency, macOS 14+ (target also runs on **macOS Tahoe 26.x**), SwiftUI `MenuBarExtra`/`Settings` scene, GRDB.swift (new SPM dep), WhisperKit (existing), CryptoKit (system), Swift Charts (system), XCTest.
+
+---
+
+## Revision Log v2 (2026-05-28, after Codex review)
+
+The original plan had compile-level and correctness bugs caught by a Codex (`gpt-5.4`, high) holistic pass and additional web research. **Every task below carries a `REVISION v2:` block at the top** with the patch that applies; the body of the task is the original draft and must be read **after** the revision block. Where the revision contradicts the body, the revision wins.
+
+The patches resolve 17 review findings plus 13 reconcile-pass refinements. Summary:
+
+1. **WhisperKit prompt path is now threaded end-to-end.** `WhisperKitTranscribing.transcribe(...)` gains a `promptTokens: [Int]?` parameter. `Transcriber` passes `snapshot.prompt.promptTokens` on every call. `RealWhisperKit` passes it into `DecodingOptions(promptTokens:)` (verified in vendored `Configurations.swift:202`). Every fake/spy in tests is updated.
+2. **`PromptBuilder` API is closure-only:** `(@Sendable (String) throws -> [Int])` — no generic `Tokenizing`-mutating variant.
+3. **`AppCoordinator.SettingsBridge` is environment-injected**, never a `.shared` singleton.
+4. **Active profile is committed only after a successful swap.** `ModelManager.requestSwap(...)` is `async throws -> ServingSnapshot`. UI shows `.swappingModel` during, rolls back the picker selection on throw, and only writes `active_profile_id` after the snapshot is committed. A monotonic generation counter cancels stale earlier swap completions.
+5. **Audio retention is actually wired** via a new Task 21.5 (`RetentionAwarePersister`) injected into `Runner`. When retention is OFF, **no WAV is written at all** (no temp-then-delete). When ON, WAV is streamed to disk (chunked SHA-256 via `FileHandle` + `var hasher = SHA256()`), then the audio metadata + transcript row are inserted in a single transaction; on a failed insert, the WAV is removed (compensating delete). The runtime retention policy is snapshotted at insert time so later policy changes don't reinterpret older rows.
+6. **`CalibrationController` operates on the serving snapshot**, not a passed-in `Profile`. It first requests a swap to the calibration profile/model, awaits the committed `ServingSnapshot`, asserts it matches the requested profile+model, then runs the ceremony using `snapshot.rules` for the post-process step.
+7. **`Settings` opening on macOS Tahoe 26 uses the hidden-Window + notification trampoline** (Steipete's recipe). Scene order is **load-bearing**: `Window → MenuBarExtra → Settings`. A hidden `Window` scene with `@Environment(\.openSettings)` listens for an `openSettingsRequest` notification, briefly toggles activation policy from the current value back to itself, and calls `openSettings()`. The previous activation policy is captured and restored — never assumed `.accessory` or `.regular`. The menu-bar item posts the notification instead of calling `NSApp.sendAction(showSettingsWindow:)`.
+8. **`SettingsStore` enforces the "last active profile" invariant** in the store, not just the UI: `softDelete` refuses when the row is the last non-deleted profile. `get(profileID:)` gains an `includeDeleted` parameter (defaults `false`). `lastActive()` returns the count of non-deleted profiles.
+9. **`Runner` uses `await paster.paste(...)`** (the existing `Pasting` protocol is async).
+10. **UI tabs gain functional tests** via injected coordinator/store protocols. The Settings tabs read from injection seams (e.g. `ProfilesViewModel`) so tests don't need to drive raw SwiftUI bindings.
+11. **`HSplitView` → `NavigationSplitView`** for the Profiles tab.
+12. **Audio file + DB consistency** uses write-temp → fsync → atomic move → DB insert in one transaction → on insert failure remove the WAV. Launch-time orphan sweep covers crashes between move and insert.
+13. The harness gains a hidden-Window scene-order check and at least one functional-binding test per UI tab.
+
+Verified facts (no need to re-verify during execution):
+
+- `WhisperKit.DecodingOptions(promptTokens: [Int]?)` exists (constructor param).
+- `WhisperKit.tokenizer` is non-nil after `RealWhisperKit.make()` (loaded inside `loadModels` via `loadTokenizerIfNeeded`).
+- `GRDB 7 DatabaseQueue.init(named:configuration:)` and `init(path:configuration:)` both `throws` — `try` is correct.
+- `GRDB Configuration.foreignKeysEnabled` exists with default `true`. The explicit set is a no-op but kept for clarity.
+- `openSettings()` is broken inside `MenuBarExtra` on macOS Tahoe 26 — the hidden-Window trampoline is the verified workaround.
 
 ---
 
@@ -745,6 +775,12 @@ git commit -m "feat(core): Profile/ReplacementRule/PromptPayload/ServingSnapshot
 
 ## Task 15: SettingsStore (profile CRUD, active pointer, soft-delete, hard-purge)
 
+> **REVISION v2 (read first):**
+> - Add `lastActive() throws -> Int` returning the count of profiles with `deleted_at IS NULL`.
+> - `softDelete(profileID:)` must throw `SettingsStoreError.cannotDeleteLastActive` if `lastActive() <= 1` and the target is not already soft-deleted.
+> - `get(profileID:includeDeleted: Bool = false)` — when `includeDeleted=false` (default), filter `WHERE deleted_at IS NULL`. The active-profile pointer must never resolve to a soft-deleted row; `activeOrFirstActive()` filters accordingly.
+> - Two new tests: (a) soft-deleting the last active profile throws; (b) `get(profileID:)` of a soft-deleted profile returns nil unless `includeDeleted: true`.
+
 **Files:**
 - Create: `MumblurCore/Sources/MumblurCore/Storage/SettingsStore.swift`
 - Create: `MumblurCore/Tests/MumblurCoreTests/Storage/SettingsStoreTests.swift`
@@ -1000,6 +1036,11 @@ git commit -m "feat(storage): SettingsStore (profile CRUD + soft-delete + hard-p
 ---
 
 ## Task 16: TranscriptStore + AudioStore (write-then-insert + retention sweeper + orphan cleanup)
+
+> **REVISION v2 (read first):**
+> - `AudioStore.write(samples:sampleRateHz:)` must **stream** the WAV write and SHA-256 via `FileHandle` + `var hasher = SHA256(); hasher.update(data: chunk); … hasher.finalize()`. Do not call `Data(contentsOf:)` to re-read the file just to hash it. Header is written first, then PCM in chunks (e.g. 64 KiB) which are also hashed.
+> - Write protocol: write to `clips/<uuid>.wav.part` → `fsync` the file → move atomically to `clips/<uuid>.wav`. The DB insert happens in a separate transaction *after* the move (see Task 21.5). If the DB insert fails, the caller deletes the moved file (compensating delete). Launch-time orphan sweep (already specified) catches crashes between move and insert.
+> - The retention sweeper unchanged, except it must also delete the orphaned WAVs of the rows it deletes (call `audio.cleanupOrphans(...)` after the row delete, which the spec already does).
 
 **Files:**
 - Create: `MumblurCore/Sources/MumblurCore/Storage/TranscriptStore.swift`
@@ -1382,6 +1423,21 @@ git commit -m "feat(storage): TranscriptStore + AudioStore (write-then-insert, r
 
 ## Task 17: WhisperKit integration spike + PromptBuilder
 
+> **REVISION v2 (read first):**
+> - `PromptBuilder` has a **single** closure-only public API:
+>   ```swift
+>   public typealias TokenizeText = @Sendable (String) throws -> [Int]
+>   public enum PromptBuilder {
+>       public static func build(initialPrompt: String?,
+>                                vocab: [String],
+>                                budget: PromptBudget,
+>                                tokenize: TokenizeText) throws -> PromptPayload
+>   }
+>   ```
+>   Delete the generic `<T: Tokenizing>` overload and the `buildClosure` private duplicate from the body below. The `Tokenizing` protocol still exists for `LoadedModel.tokenizer`, but `PromptBuilder` does not depend on it.
+> - The unit tests should pass a `@Sendable` closure (a counter-based fake tokenizer) — no generic struct value needed.
+> - The spike test name and contract change: rename `testPipelineLoadsAndExposesTokenizer` to `testPipelineLoadsAndAcceptsPromptTokens` and add a `pipeline.transcribe(audioArray:decodeOptions:)` call with `DecodingOptions(promptTokens: tokens)`. Assert it returns without throwing — do **not** assert a particular textual output (a tiny model is not deterministic on biasing).
+
 **Goal:** Before building the rest of the pipeline on `promptTokens`, prove the API really works end-to-end. The spike is one **gated slow test** that downloads a tiny model, tokenizes a glossary, and verifies that biasing affects decoding.
 
 **Files:**
@@ -1634,6 +1690,23 @@ git commit -m "feat(prompt): PromptBuilder + WhisperKit reality spike (gated)"
 
 ## Task 18: Transcriber holds ServingSnapshot; returns (rawText, snapshot)
 
+> **REVISION v2 (read first) — this is the load-bearing compile-level fix:**
+> - `WhisperKitTranscribing` gains a `promptTokens` parameter:
+>   ```swift
+>   public protocol WhisperKitTranscribing: Sendable {
+>       func transcribe(audioArray: [Float],
+>                       language: String?,
+>                       detectLanguage: Bool,
+>                       promptTokens: [Int]?) async throws -> [any WhisperKitSegment]
+>   }
+>   ```
+> - `Transcriber.transcribe(_:)` passes `snap.prompt.promptTokens` (or `nil` if empty) on every call.
+> - `RealWhisperKit.transcribe(audioArray:language:detectLanguage:promptTokens:)` constructs
+>   `DecodingOptions(language: language, detectLanguage: detectLanguage, promptTokens: promptTokens?.isEmpty == true ? nil : promptTokens)`.
+>   The existing 30-second padding stays.
+> - **All fakes** in `TranscriberTests`, `RunnerTests`, `ModelManagerTests`, `CalibrationControllerTests` must add the new parameter to their stubs (it can be ignored inside the fake — but the signature must compile).
+> - A new test in `TranscriberTests`: `testTranscribe_threadsPromptTokensFromSnapshot()` — fake captures the `promptTokens` argument and asserts it equals `snapshot.prompt.promptTokens`.
+
 **Files:**
 - Modify: `MumblurCore/Sources/MumblurCore/Transcriber.swift`
 - Modify: `MumblurCore/Tests/MumblurCoreTests/TranscriberTests.swift`
@@ -1786,6 +1859,11 @@ git commit -m "refactor(transcribe): Transcriber owns ServingSnapshot; returns (
 ---
 
 ## Task 19: ModelManager with generation-guarded swap
+
+> **REVISION v2 (read first):**
+> - `requestSwap(to:promptBudget:)` is **`async throws -> ServingSnapshot`** (not `Void`). On a successful swap it returns the committed snapshot; on a load failure it throws. Errors are *not* swallowed.
+> - The generation guard still runs: if a newer request supersedes this one before commit, the current `requestSwap` throws `ModelManagerError.staleSwap` and does NOT commit to the `Transcriber`. The caller (AppCoordinator) decides what to do based on which swap it is observing.
+> - Add tests covering: (a) successful swap returns the snapshot; (b) stale older swap throws `.staleSwap` AND does not clobber the newer-loaded snapshot; (c) loader error surfaces as `requestSwap` throw.
 
 **Files:**
 - Create: `MumblurCore/Sources/MumblurCore/ModelManager.swift`
@@ -1956,6 +2034,21 @@ git commit -m "feat(model): ModelManager with generation-guarded swap"
 
 ## Task 20: Runner integration — post-process + transactional persist via snapshot
 
+> **REVISION v2 (read first):**
+> - Use **`await paster.paste(finalText)`** — the existing `Pasting` protocol is async. The `try? paster.paste(...)` line in the body is wrong; replace it.
+> - Persistence is **NOT** `Task.detached`. The persistence call is `await`ed inside the runner's own worker (the worker is already off the UI). Detached losing structured-concurrency makes Swift 6 `Sendable` capture analysis harder and we don't need it.
+> - Inject persistence via a `DictationPersisting` protocol (not `TranscriptPersisting`) — this is the seam that Task 21.5 fills with `RetentionAwarePersister`. Signature:
+>   ```swift
+>   public protocol DictationPersisting: Sendable {
+>       func persist(samples: [Float],
+>                    snapshot: ServingSnapshot,
+>                    startedAt: Date, durationMs: Int,
+>                    rawText: String, finalText: String) async
+>   }
+>   ```
+>   The persister is responsible for consulting retention policy and either writing audio or not (Task 21.5). Persist failures are logged but do not propagate to the worker — paste already happened.
+> - Use **`output.snapshot.rules`** (not `profile.rules`) for post-processing. The whole point of returning the snapshot from `Transcriber` is that this code path treats the snapshot as the source of truth.
+
 **Files:**
 - Modify: `MumblurCore/Sources/MumblurCore/Runner.swift`
 - Modify: `MumblurCore/Tests/MumblurCoreTests/RunnerTests.swift`
@@ -2085,6 +2178,15 @@ git commit -m "feat(runner): post-process via snapshot.rules; persist via Transc
 ---
 
 ## Task 21: AppCoordinator — stores, pending vs serving selection, .swappingModel state
+
+> **REVISION v2 (read first):**
+> - `switchActiveProfile(_:)` becomes a **tentative-then-commit** flow:
+>   1. Stash the previously-active profile as `lastCommittedProfile` for rollback.
+>   2. Set `uiState = .swappingModel` and reflect the *tentative* profile in the picker via a `pendingProfileID` published field (separate from `activeProfileID`).
+>   3. Await `manager.requestSwap(to:)`. **Only if it returns a committed snapshot** matching the request, write `active_profile_id` to the DB and set `activeProfileName` / `activeProfileID`.
+>   4. On throw (load failed or stale-swap superseded), restore `pendingProfileID = lastCommittedProfile.id` and set a non-fatal `lastError` for the UI.
+> - `SettingsBridge` is provided via `EnvironmentObject`, **not** `.shared`. The `AppCoordinator` owns the bridge instance; `MumblurApp` passes both into the Settings scene via `.environmentObject(...)`. Delete every `SettingsBridge.shared` reference in the body below; views read `@EnvironmentObject private var bridge: AppCoordinator.SettingsBridge`.
+> - **Activation policy is restored, not assumed.** The Settings-opening trampoline (Task 25) captures `NSApp.activationPolicy` before switching to `.regular` and restores that captured value on Settings dismissal — never hardcodes `.accessory`.
 
 **Files:**
 - Modify: `App/AppCoordinator.swift`
@@ -2314,6 +2416,126 @@ Expected: build succeeds.
 scripts/verify_task.sh 21
 git add App/AppCoordinator.swift scripts/verify_task.sh
 git commit -m "feat(app): AppCoordinator wires stores, pending/serving selection, .swappingModel"
+```
+
+---
+
+# Phase 3.5 — Retention-aware dictation persistence
+
+## Task 21.5 (NEW): RetentionAwarePersister + DictationRecorder buffer pass-through
+
+**Files:**
+- Create: `MumblurCore/Sources/MumblurCore/Storage/RetentionAwarePersister.swift`
+- Create: `MumblurCore/Tests/MumblurCoreTests/Storage/RetentionAwarePersisterTests.swift`
+- Modify: `MumblurCore/Sources/MumblurCore/Runner.swift` (worker passes its samples buffer into `DictationPersisting.persist`)
+- Modify: `scripts/verify_task.sh`
+
+- [ ] **Step 1: Write the failing tests**
+
+The persister must (a) when retention OFF, write **no** WAV and insert a text-only row; (b) when retention ON, stream the WAV to disk via `AudioStore.write`, then insert with audio metadata in a single transaction; (c) on DB insert failure, delete the freshly-written WAV (compensating delete); (d) snapshot the retention policy at insert time (later policy changes don't reinterpret older rows — this is just the row's audio metadata being intrinsic, no extra column needed beyond what's already in `transcript`).
+
+```swift
+// MumblurCore/Tests/MumblurCoreTests/Storage/RetentionAwarePersisterTests.swift
+import XCTest
+@testable import MumblurCore
+
+final class RetentionAwarePersisterTests: XCTestCase {
+    func testRetentionOff_noWAV_textOnlyRow() async throws { /* … */ }
+    func testRetentionOn_writesWAV_andRowReferencesIt() async throws { /* … */ }
+    func testInsertFailure_removesFreshlyWrittenWAV() async throws { /* … */ }
+}
+```
+
+- [ ] **Step 2: Implement `RetentionAwarePersister.swift`**
+
+```swift
+// MumblurCore/Sources/MumblurCore/Storage/RetentionAwarePersister.swift
+import Foundation
+
+public actor RetentionAwarePersister: DictationPersisting {
+    private let database: Database
+    private let transcripts: TranscriptStore
+    private let audio: AudioStore
+
+    public init(database: Database, transcripts: TranscriptStore, audio: AudioStore) {
+        self.database = database; self.transcripts = transcripts; self.audio = audio
+    }
+
+    public func persist(samples: [Float], snapshot: ServingSnapshot,
+                        startedAt: Date, durationMs: Int,
+                        rawText: String, finalText: String) async {
+        let enabled = (try? readRetentionEnabled()) ?? false
+        if !enabled {
+            try? await transcripts.insertTextOnly(
+                profileID: snapshot.profileID, profileNameSnapshot: snapshot.profileName,
+                promptSnapshot: snapshot.prompt.sourceText.isEmpty ? nil : snapshot.prompt.sourceText,
+                startedAt: startedAt, durationMs: durationMs,
+                modelID: snapshot.modelID, language: snapshot.language,
+                rawText: rawText, finalText: finalText)
+            return
+        }
+        do {
+            let written = try await audio.write(samples: samples, sampleRateHz: 16000)
+            do {
+                try await transcripts.insertWithAudio(
+                    profileID: snapshot.profileID, profileNameSnapshot: snapshot.profileName,
+                    promptSnapshot: snapshot.prompt.sourceText.isEmpty ? nil : snapshot.prompt.sourceText,
+                    startedAt: startedAt, durationMs: durationMs,
+                    modelID: snapshot.modelID, language: snapshot.language,
+                    rawText: rawText, finalText: finalText,
+                    audio: .init(relPath: written.relPath, bytes: written.bytes,
+                                 sha256: written.sha256, sampleRateHz: 16000,
+                                 channels: 1, pcmEncoding: "pcm_s16le"))
+            } catch {
+                // Compensating delete — keep the FS consistent with the DB.
+                try? FileManager.default.removeItem(at: written.absoluteURL)
+                Logger.app.error("transcript insert failed; removed WAV: \(error.localizedDescription)")
+            }
+        } catch {
+            Logger.app.error("audio write failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func readRetentionEnabled() throws -> Bool {
+        try database.read { db in
+            let v = try Int.fetchOne(db, sql:
+                "SELECT enabled FROM retention_policy WHERE singleton=1") ?? 0
+            return v == 1
+        }
+    }
+}
+```
+
+- [ ] **Step 3: Modify `Runner` to capture and forward the samples buffer**
+
+The runner already has the samples buffer at the moment it hands them to the transcriber. Capture them into a local `let samples = …` and pass them into `persister.persist(samples:snapshot:startedAt:durationMs:rawText:finalText:)` after paste.
+
+- [ ] **Step 4: Wire the persister in `AppCoordinator.bootstrap`**
+
+Replace any direct `transcripts` injection into `Runner` with a `RetentionAwarePersister(database: db, transcripts: transcripts, audio: audio)`.
+
+- [ ] **Step 5: Extend `scripts/verify_task.sh`**
+
+```bash
+    21|21.5)
+        bash "$0" 21
+        need_file MumblurCore/Sources/MumblurCore/Storage/RetentionAwarePersister.swift
+        need_file MumblurCore/Tests/MumblurCoreTests/Storage/RetentionAwarePersisterTests.swift
+        core_test
+        ;;
+```
+
+(In `verify_task.sh` the case is `21.5)` — bash supports float-string case labels via the alternation syntax. If you'd rather avoid that, renumber 21.5 → 22 and shift everything downstream by 1.)
+
+- [ ] **Step 6: Verify and commit**
+
+```bash
+scripts/verify_task.sh 21.5
+git add MumblurCore/Sources/MumblurCore/Storage/RetentionAwarePersister.swift \
+        MumblurCore/Tests/MumblurCoreTests/Storage/RetentionAwarePersisterTests.swift \
+        MumblurCore/Sources/MumblurCore/Runner.swift App/AppCoordinator.swift \
+        scripts/verify_task.sh
+git commit -m "feat(storage): RetentionAwarePersister wires audio retention into dictation pipeline"
 ```
 
 ---
@@ -2785,6 +3007,11 @@ git commit -m "feat(tuning): scripts (mining/eval split) + ErrorMiner + Suggesti
 
 ## Task 24: CalibrationController (suspends Runner, drives the ceremony)
 
+> **REVISION v2 (read first):**
+> - The controller no longer accepts a `Profile` argument for the ceremony body — it operates on the **serving snapshot**. The caller first invokes `modelManager.requestSwap(to: requestedProfile)` and awaits the returned `ServingSnapshot`. The controller asserts `snapshot.profileID == requestedProfile.id && snapshot.modelID == requestedProfile.modelID` before starting; if the snapshot doesn't match (e.g., a concurrent swap superseded it), it throws `CalibrationError.snapshotMismatch`.
+> - WER application uses **`snapshot.rules`** to compute `finalText` — the rules that the user is actually dictating against. The `profile.rules` shortcut in the body below is wrong.
+> - On suggestion acceptance, the controller writes new vocab/rules to the profile, then calls `modelManager.requestSwap(to: refreshedProfile)` to rebuild the prompt tokens (vocab changed → prompt tokens need re-tokenization).
+
 **Files:**
 - Create: `MumblurCore/Sources/MumblurCore/Tuning/CalibrationController.swift`
 - Create: `MumblurCore/Tests/MumblurCoreTests/Tuning/CalibrationControllerTests.swift`
@@ -3014,6 +3241,76 @@ git commit -m "feat(tuning): CalibrationController (suspends Runner; mining/eval
 
 ## Task 25: Settings scene + General tab + Profiles tab
 
+> **REVISION v2 (read first) — this is the macOS Tahoe 26 working recipe:**
+>
+> Scene declaration order in `MumblurApp.body` is **load-bearing**: `Window → MenuBarExtra → Settings`. Document this with an inline `// SCENE ORDER MATTERS — DO NOT REARRANGE` comment.
+>
+> ```swift
+> @main
+> struct MumblurApp: App {
+>     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+>
+>     var body: some Scene {
+>         // SCENE ORDER MATTERS — DO NOT REARRANGE.
+>         // openSettings() on macOS Tahoe 26 requires a SwiftUI render tree that
+>         // is mounted BEFORE the Settings scene; the hidden Window is that tree.
+>         Window("OpenSettingsTrampoline", id: "openSettingsTrampoline") {
+>             OpenSettingsTrampolineView()
+>         }
+>         .windowResizability(.contentSize)
+>         .defaultSize(width: 1, height: 1)
+>         .commandsRemoved()
+>
+>         MenuBarExtra {
+>             MenuBarContent(coordinator: delegate.coordinator)
+>         } label: {
+>             CoordinatorIcon(coordinator: delegate.coordinator)
+>         }
+>         .menuBarExtraStyle(.menu)
+>
+>         Settings {
+>             SettingsScene()
+>                 .environmentObject(delegate.coordinator)
+>                 .environmentObject(delegate.coordinator.settingsBridge)
+>         }
+>     }
+> }
+>
+> private struct OpenSettingsTrampolineView: View {
+>     @Environment(\.openSettings) private var openSettings
+>     @State private var savedPolicy: NSApplication.ActivationPolicy?
+>     var body: some View {
+>         Color.clear
+>             .frame(width: 1, height: 1)
+>             .onReceive(NotificationCenter.default.publisher(for: .openSettingsRequest)) { _ in
+>                 Task { @MainActor in
+>                     savedPolicy = NSApp.activationPolicy()
+>                     NSApp.setActivationPolicy(.regular)
+>                     try? await Task.sleep(for: .milliseconds(80))
+>                     NSApp.activate(ignoringOtherApps: true)
+>                     openSettings()
+>                 }
+>             }
+>             .onReceive(NotificationCenter.default.publisher(for: .settingsWindowClosed)) { _ in
+>                 if let p = savedPolicy { NSApp.setActivationPolicy(p); savedPolicy = nil }
+>             }
+>     }
+> }
+>
+> extension Notification.Name {
+>     static let openSettingsRequest = Notification.Name("mumblur.openSettingsRequest")
+>     static let settingsWindowClosed = Notification.Name("mumblur.settingsWindowClosed")
+> }
+> ```
+>
+> `SettingsScene` posts `.settingsWindowClosed` from `.onDisappear`. The menu-bar "Settings…" item (Task 27) posts `.openSettingsRequest` — **not** `NSApp.sendAction(showSettingsWindow:)`.
+>
+> **Other patches:**
+> - Replace `HSplitView` in `ProfilesSettingsView` with `NavigationSplitView` (sidebar list / detail editor).
+> - Remove the `SettingsBridge.shared` references; use `@EnvironmentObject private var bridge: AppCoordinator.SettingsBridge`.
+> - Functional test (XCTest, not UI test): `ProfilesViewModelTests.testPickerChange_callsSwitchActiveProfile` — instantiate a `ProfilesViewModel` with a fake coordinator interface, set its selection, assert the fake recorded the call.
+> - `scripts/verify_task.sh` case 25 also `grep -q 'OpenSettingsTrampoline' App/MumblurApp.swift` and asserts scene order via `awk` that finds `Window` line before `MenuBarExtra` line before `Settings` line.
+
 **Files:**
 - Modify: `App/MumblurApp.swift` (add `Settings` scene)
 - Create: `App/Settings/SettingsScene.swift`
@@ -3214,6 +3511,14 @@ git commit -m "feat(ui): Settings scene + General + Profiles tabs"
 ---
 
 ## Task 26: Models tab + Tuning tab + Data tab + About tab
+
+> **REVISION v2 (read first):**
+> - Each tab gets a small **view-model** (`ModelsViewModel`, `TuningViewModel`, `DataViewModel`) that holds the actual state and exposes the commands the UI calls. Views become thin. This is the injection seam for functional tests.
+> - Functional tests (XCTest, `@MainActor`):
+>   - `DataViewModelTests.testRetentionToggle_persistsToDB` — toggle the published `retentionEnabled`, assert `retention_policy.enabled` row updates.
+>   - `TuningViewModelTests.testStart_enqueuesCalibrationRun` — call `start()`, assert a fake `CalibrationController` recorded a `run(...)` call.
+>   - `ModelsViewModelTests.testInstall_callsLoaderWithProgress` — call `install(modelID:)`, assert a fake loader saw the download invocation.
+> - The view-model files live under `App/Settings/ViewModels/`. Body code in this task still creates the View files as listed, but each `View` constructs its `ViewModel` via dependency injection from `AppCoordinator`.
 
 **Files:**
 - Create: `App/Settings/ModelsSettingsView.swift`
@@ -3432,6 +3737,11 @@ git commit -m "feat(ui): Models + Tuning + Data + About tabs"
 ---
 
 ## Task 27: Menu bar active-profile switcher + "Settings…" item + launch-at-login
+
+> **REVISION v2 (read first):**
+> - The "Settings…" button posts `NotificationCenter.default.post(name: .openSettingsRequest, object: nil)` — it does **not** call `NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)`. The trampoline view from Task 25 handles the activation-policy juggling and `openSettings()` call.
+> - The keyboard shortcut on the menu item is fine, but it only works while the menu is open. That's acceptable — macOS Tahoe doesn't give us a global ⌘, for `LSUIElement` apps without a regular dock icon.
+> - `SMAppService.mainApp.register()` for an `LSUIElement` app is supported; no helper bundle needed. Treat `.alreadyRegistered` as success, not an error.
 
 **Files:**
 - Modify: `App/MenuBarContent.swift`
