@@ -43,6 +43,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let coordinator = AppCoordinator()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Under XCTest the app is only a test host — don't boot hardware/DB.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil { return }
         Task { await coordinator.bootstrap() }
     }
 }
