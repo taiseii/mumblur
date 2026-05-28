@@ -1,5 +1,6 @@
 import SwiftUI
 import MumblurCore
+import ServiceManagement
 import os
 
 @MainActor
@@ -134,6 +135,18 @@ final class AppCoordinator: ObservableObject {
     func quit() {
         runner?.shutdown(); hotkey?.stop()
         NSApplication.shared.terminate(nil)
+    }
+
+    var isLaunchAtLoginEnabled: Bool { SMAppService.mainApp.status == .enabled }
+
+    func setLaunchAtLogin(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register() }
+            else  { try SMAppService.mainApp.unregister() }
+        } catch {
+            Logger.app.error("launch-at-login toggle failed: \(error.localizedDescription)")
+            lastError = error.localizedDescription
+        }
     }
 
     var icon: String {

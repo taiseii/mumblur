@@ -14,6 +14,14 @@ settings:
 packages:
   MumblurCore:
     path: MumblurCore
+schemes:
+  MumblurAppTests:
+    build:
+      targets:
+        MumblurAppTests: all
+    test:
+      targets:
+        - MumblurAppTests
 targets:
   Mumblur:
     type: application
@@ -24,6 +32,7 @@ targets:
         excludes:
           - Resources/Info.plist
           - Resources/Mumblur.entitlements
+          - Tests
     resources:
       - path: App/Resources/Assets.xcassets
     settings:
@@ -39,5 +48,22 @@ targets:
         LD_RUNPATH_SEARCH_PATHS:
           - "@executable_path/../Frameworks"
     dependencies:
+      - package: MumblurCore
+        product: MumblurCore
+  MumblurAppTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: App/Tests
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+    dependencies:
+      - target: Mumblur
       - package: MumblurCore
         product: MumblurCore

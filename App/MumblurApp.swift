@@ -6,12 +6,32 @@ struct MumblurApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     var body: some Scene {
+        // SCENE ORDER MATTERS — DO NOT REARRANGE.
+        // On macOS Tahoe 26, `openSettings()` requires a SwiftUI render tree mounted
+        // BEFORE the Settings scene. The hidden Window IS that tree.
+        Window("OpenSettingsTrampoline", id: "openSettingsTrampoline") {
+            OpenSettingsTrampolineView()
+        }
+        .windowResizability(.contentSize)
+        .defaultSize(width: 1, height: 1)
+        .commandsRemoved()
+
         MenuBarExtra {
             MenuBarContent(coordinator: delegate.coordinator)
+                .environmentObject(delegate.coordinator.settingsBridge)
         } label: {
             CoordinatorIcon(coordinator: delegate.coordinator)
         }
         .menuBarExtraStyle(.menu)
+
+        Settings {
+            SettingsScene()
+                .environmentObject(delegate.coordinator)
+                .environmentObject(delegate.coordinator.settingsBridge)
+                .onDisappear {
+                    NotificationCenter.default.post(name: .settingsWindowClosed, object: nil)
+                }
+        }
     }
 }
 

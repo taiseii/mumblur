@@ -200,6 +200,25 @@ case "$TASK" in
             || fail "Runner missing setSuspended(on:)"
         core_test
         ;;
+    25)
+        bash "$0" 24
+        need_file App/Settings/SettingsScene.swift
+        need_file App/Settings/OpenSettingsTrampoline.swift
+        need_file App/Settings/GeneralSettingsView.swift
+        need_file App/Settings/ProfilesSettingsView.swift
+        need_file App/Settings/ViewModels/ProfilesViewModel.swift
+        need_file App/Tests/Settings/ProfilesViewModelTests.swift
+        grep -q 'Settings {' App/MumblurApp.swift || fail "MumblurApp missing Settings scene"
+        grep -q 'OpenSettingsTrampoline' App/MumblurApp.swift \
+            || fail "MumblurApp missing the hidden Window trampoline"
+        awk '
+            /Window\(.OpenSettingsTrampoline/  { if (!w) w=NR }
+            /MenuBarExtra/                     { if (!m) m=NR }
+            /^[[:space:]]*Settings[[:space:]]*\{/ { if (!s) s=NR }
+            END { if (w && m && s && w<m && m<s) exit 0; else exit 1 }
+        ' App/MumblurApp.swift || fail "MumblurApp scene order must be Window -> MenuBarExtra -> Settings"
+        app_build
+        ;;
     *)
         fail "unknown task: $TASK"
         ;;

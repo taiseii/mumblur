@@ -8,24 +8,56 @@
 
 /* Begin PBXBuildFile section */
 		06AA7449C5AFDBF640AD5DA7 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5A65D77A6B5AF2848CDD8F5A /* Assets.xcassets */; };
+		282B495EAB323EE068CA6DE1 /* SettingsScene.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42A4D5673DBF04BACF11AB99 /* SettingsScene.swift */; };
 		4F6AAB7CDCC7F8AFCAB8D96C /* PermissionsCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06D892ABC34B5839488E304 /* PermissionsCoordinator.swift */; };
+		6F2B1FA79196C77F715A5FFA /* ProfilesViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEEC3D99E40CE718BF580BCE /* ProfilesViewModelTests.swift */; };
 		B8E993C2CB119F12820D4D47 /* MumblurApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B75E5E2815C39ACA17B34F7 /* MumblurApp.swift */; };
+		D95F5BB8C89838ECF024275E /* ProfilesSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E21EA7394CB579355BCFB41 /* ProfilesSettingsView.swift */; };
 		DD1C813F6E33AD8187265896 /* MenuBarContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4924377E2F41E7E54C12381 /* MenuBarContent.swift */; };
 		E2C268270E50738EB7ED21F8 /* AppCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F66F159320BB9975C86FF316 /* AppCoordinator.swift */; };
+		E77A3E48A3E501345EF3D384 /* GeneralSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E36DEB8603E2AAE38CD0D380 /* GeneralSettingsView.swift */; };
+		EF27D45BA5D398949C375547 /* OpenSettingsTrampoline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 779A4BE56CF486C9F5421608 /* OpenSettingsTrampoline.swift */; };
 		F8B5F8CA655C02E293E271F2 /* MumblurCore in Frameworks */ = {isa = PBXBuildFile; productRef = 9AAEAE192381C0EF46222E30 /* MumblurCore */; };
+		FA580BD43BFEA80BBCCCBC24 /* MumblurCore in Frameworks */ = {isa = PBXBuildFile; productRef = 1A6433AA7E40E6DB4544EA42 /* MumblurCore */; };
+		FB0EDCC35478D516842C78DE /* ProfilesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B28A3DD6A373ECD1E80FBBED /* ProfilesViewModel.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		DA98501CD5C7491AFBC271D3 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4BC0C8E20992B87E1A341D69 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 6784BC767A4A013AC53FE9C8;
+			remoteInfo = Mumblur;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
+		0133C9C1BF3F10A64707DFCD /* MumblurAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MumblurAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		19CC9DA0D69B5D34A4AAB209 /* MumblurCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MumblurCore; path = MumblurCore; sourceTree = SOURCE_ROOT; };
 		2B75E5E2815C39ACA17B34F7 /* MumblurApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MumblurApp.swift; sourceTree = "<group>"; };
+		3E21EA7394CB579355BCFB41 /* ProfilesSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfilesSettingsView.swift; sourceTree = "<group>"; };
+		42A4D5673DBF04BACF11AB99 /* SettingsScene.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsScene.swift; sourceTree = "<group>"; };
 		4E39634789368D6E48ED70FC /* Mumblur.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Mumblur.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		5A65D77A6B5AF2848CDD8F5A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		779A4BE56CF486C9F5421608 /* OpenSettingsTrampoline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSettingsTrampoline.swift; sourceTree = "<group>"; };
+		B28A3DD6A373ECD1E80FBBED /* ProfilesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfilesViewModel.swift; sourceTree = "<group>"; };
+		CEEC3D99E40CE718BF580BCE /* ProfilesViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfilesViewModelTests.swift; sourceTree = "<group>"; };
 		D06D892ABC34B5839488E304 /* PermissionsCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsCoordinator.swift; sourceTree = "<group>"; };
+		E36DEB8603E2AAE38CD0D380 /* GeneralSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneralSettingsView.swift; sourceTree = "<group>"; };
 		E4924377E2F41E7E54C12381 /* MenuBarContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarContent.swift; sourceTree = "<group>"; };
 		F66F159320BB9975C86FF316 /* AppCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoordinator.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		77C9E257CCB407F03A2F3A15 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FA580BD43BFEA80BBCCCBC24 /* MumblurCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		E439274028616445F9872750 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -37,6 +69,14 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		322F4FB330A07D007597F9D7 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				B79E26EF63229A6762658246 /* Settings */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
 		3BF94A3890525C7F560CFD51 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
@@ -54,12 +94,29 @@
 			);
 			sourceTree = "<group>";
 		};
+		995B7EF0D2DDED3EC87F227A /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				B28A3DD6A373ECD1E80FBBED /* ProfilesViewModel.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
 		B560FBD07AA211ECCDB24F90 /* Products */ = {
 			isa = PBXGroup;
 			children = (
 				4E39634789368D6E48ED70FC /* Mumblur.app */,
+				0133C9C1BF3F10A64707DFCD /* MumblurAppTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		B79E26EF63229A6762658246 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				CEEC3D99E40CE718BF580BCE /* ProfilesViewModelTests.swift */,
+			);
+			path = Settings;
 			sourceTree = "<group>";
 		};
 		C0431447F059BE2FA2DCBA1D /* Packages */ = {
@@ -78,8 +135,22 @@
 				2B75E5E2815C39ACA17B34F7 /* MumblurApp.swift */,
 				D06D892ABC34B5839488E304 /* PermissionsCoordinator.swift */,
 				3BF94A3890525C7F560CFD51 /* Resources */,
+				F983AD725D9D5CA0A4DBAC02 /* Settings */,
+				322F4FB330A07D007597F9D7 /* Tests */,
 			);
 			path = App;
+			sourceTree = "<group>";
+		};
+		F983AD725D9D5CA0A4DBAC02 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				E36DEB8603E2AAE38CD0D380 /* GeneralSettingsView.swift */,
+				779A4BE56CF486C9F5421608 /* OpenSettingsTrampoline.swift */,
+				3E21EA7394CB579355BCFB41 /* ProfilesSettingsView.swift */,
+				42A4D5673DBF04BACF11AB99 /* SettingsScene.swift */,
+				995B7EF0D2DDED3EC87F227A /* ViewModels */,
+			);
+			path = Settings;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -105,6 +176,26 @@
 			productReference = 4E39634789368D6E48ED70FC /* Mumblur.app */;
 			productType = "com.apple.product-type.application";
 		};
+		7475EB2B04BCAD19D74E1CDD /* MumblurAppTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E3DA50AB8342E80FEDDCE2DD /* Build configuration list for PBXNativeTarget "MumblurAppTests" */;
+			buildPhases = (
+				423080E68AC729E1E4AA1A1A /* Sources */,
+				77C9E257CCB407F03A2F3A15 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				10F04360D84E3CA43F762EEA /* PBXTargetDependency */,
+			);
+			name = MumblurAppTests;
+			packageProductDependencies = (
+				1A6433AA7E40E6DB4544EA42 /* MumblurCore */,
+			);
+			productName = MumblurAppTests;
+			productReference = 0133C9C1BF3F10A64707DFCD /* MumblurAppTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -115,6 +206,9 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					6784BC767A4A013AC53FE9C8 = {
+						ProvisioningStyle = Manual;
+					};
+					7475EB2B04BCAD19D74E1CDD = {
 						ProvisioningStyle = Manual;
 					};
 				};
@@ -137,6 +231,7 @@
 			projectRoot = "";
 			targets = (
 				6784BC767A4A013AC53FE9C8 /* Mumblur */,
+				7475EB2B04BCAD19D74E1CDD /* MumblurAppTests */,
 			);
 		};
 /* End PBXProject section */
@@ -153,20 +248,63 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		423080E68AC729E1E4AA1A1A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6F2B1FA79196C77F715A5FFA /* ProfilesViewModelTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		6A4CE2F7E8168FC104895BE3 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				E2C268270E50738EB7ED21F8 /* AppCoordinator.swift in Sources */,
+				E77A3E48A3E501345EF3D384 /* GeneralSettingsView.swift in Sources */,
 				DD1C813F6E33AD8187265896 /* MenuBarContent.swift in Sources */,
 				B8E993C2CB119F12820D4D47 /* MumblurApp.swift in Sources */,
+				EF27D45BA5D398949C375547 /* OpenSettingsTrampoline.swift in Sources */,
 				4F6AAB7CDCC7F8AFCAB8D96C /* PermissionsCoordinator.swift in Sources */,
+				D95F5BB8C89838ECF024275E /* ProfilesSettingsView.swift in Sources */,
+				FB0EDCC35478D516842C78DE /* ProfilesViewModel.swift in Sources */,
+				282B495EAB323EE068CA6DE1 /* SettingsScene.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		10F04360D84E3CA43F762EEA /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 6784BC767A4A013AC53FE9C8 /* Mumblur */;
+			targetProxy = DA98501CD5C7491AFBC271D3 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		12697233FA9A2E86DBA00C88 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = world.questable.MumblurAppTests;
+				SDKROOT = macosx;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Mumblur.app/Contents/MacOS/Mumblur";
+			};
+			name = Debug;
+		};
 		2691086E1679294DB0168BEE /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -268,6 +406,28 @@
 			};
 			name = Debug;
 		};
+		A5A08A5444D00D24AD0DF08E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = world.questable.MumblurAppTests;
+				SDKROOT = macosx;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Mumblur.app/Contents/MacOS/Mumblur";
+			};
+			name = Release;
+		};
 		D4A2ABAC26194C557734FF52 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -355,6 +515,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		E3DA50AB8342E80FEDDCE2DD /* Build configuration list for PBXNativeTarget "MumblurAppTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				12697233FA9A2E86DBA00C88 /* Debug */,
+				A5A08A5444D00D24AD0DF08E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -365,6 +534,10 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		1A6433AA7E40E6DB4544EA42 /* MumblurCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MumblurCore;
+		};
 		9AAEAE192381C0EF46222E30 /* MumblurCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MumblurCore;
