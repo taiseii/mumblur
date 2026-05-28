@@ -20,7 +20,7 @@ final class AppCoordinator: ObservableObject {
     private var runner: Runner?
     private var hotkey: HotkeyListening?
     private var recorder: AudioRecording?
-    private var transcriber: Transcribing?
+    private var transcriber: Transcriber?
     private var perms: PermissionsCoordinator!
 
     init() {
@@ -34,15 +34,14 @@ final class AppCoordinator: ObservableObject {
         await perms.bootstrap()
         do {
             let kit = try await RealWhisperKit.make()
-            // Temporary bridge for Tasks 18-19 — replaced in Task 21 with real
-            // profile + ServingSnapshot wiring.
-            let core = Transcriber()
-            await core.commit(
+            // Temporary default serving snapshot + no-op persister for Tasks 20.
+            // Task 21 replaces these with real profile selection + RetentionAwarePersister.
+            let transcriber = Transcriber()
+            await transcriber.commit(
                 snapshot: ServingSnapshot(profileID: "default", profileName: "Default",
                                           modelID: "default", language: nil,
                                           prompt: .empty, rules: []),
                 kit: kit)
-            let transcriber = TranscribingBridge(inner: core)
             let recorder = try AudioRecorder()
             let paster = Paster()
 
@@ -50,6 +49,7 @@ final class AppCoordinator: ObservableObject {
                 recorder: recorder,
                 transcriber: transcriber,
                 paster: paster,
+                persister: NoOpDictationPersister(),
                 minHoldMs: 200,
                 onStateChange: { [weak self] state in
                     Task { @MainActor in self?.applyRunnerState(state) }
@@ -134,13 +134,9 @@ final class AppCoordinator: ObservableObject {
     }
 }
 
-/// Temporary bridge for Tasks 18-19 — removed in Task 21 when AppCoordinator
-/// gets real profile + ServingSnapshot wiring. Adapts the snapshot-based
-/// `Transcriber` to the legacy `Transcribing` (string-returning) interface `Runner` expects.
-private actor TranscribingBridge: Transcribing {
-    private let inner: Transcriber
-    init(inner: Transcriber) { self.inner = inner }
-    func transcribe(_ samples: [Float]) async throws -> String {
-        try await inner.transcribe(samples).rawText
-    }
+/// Temporary no-op persister for Task 20. Task 21 replaces this with
+/// `RetentionAwarePersister` once stores + retention policy are wired.
+private struct NoOpDictationPersister: DictationPersisting {
+    func persist(samples: [Float], snapshot: ServingSnapshot, startedAt: Date,
+                 durationMs: Int, rawText: String, finalText: String) async {}
 }

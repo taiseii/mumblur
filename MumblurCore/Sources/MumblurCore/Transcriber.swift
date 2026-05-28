@@ -15,11 +15,6 @@ public protocol WhisperKitTranscribing: Sendable {
                     promptTokens: [Int]?) async throws -> [any WhisperKitSegment]
 }
 
-/// String-returning abstraction used by `Runner` and its tests. Kept until the
-/// Runner pipeline is rewired in a later task.
-public protocol Transcribing: Sendable {
-    func transcribe(_ samples: [Float]) async throws -> String
-}
 
 public struct TranscriptionOutput: Sendable {
     public let rawText: String

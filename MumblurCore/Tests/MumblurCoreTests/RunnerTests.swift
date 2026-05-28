@@ -1,20 +1,195 @@
 import XCTest
 @testable import MumblurCore
 
+// MARK: - Shared helpers
+
+/// Builds a real Transcriber committed with a snapshot + the given kit.
+private func makeTranscriber(_ kit: any WhisperKitTranscribing,
+                             profileName: String = "T", modelID: String = "m",
+                             rules: [ReplacementRule] = []) async -> Transcriber {
+    let t = Transcriber()
+    await t.commit(
+        snapshot: ServingSnapshot(profileID: "t", profileName: profileName, modelID: modelID,
+                                  language: nil, prompt: .empty, rules: rules),
+        kit: kit)
+    return t
+}
+
+private struct FixedKit: WhisperKitTranscribing {
+    let text: String
+    init(text: String = "hello") { self.text = text }
+    func transcribe(audioArray: [Float], language: String?, detectLanguage: Bool,
+                    promptTokens: [Int]?) async throws -> [any WhisperKitSegment] {
+        struct S: WhisperKitSegment { let text: String }
+        return [S(text: text)]
+    }
+}
+
+private final class BlockingKit: WhisperKitTranscribing, @unchecked Sendable {
+    let text: String
+    private let unblockEvent = AsyncStream<Void>.makeStream()
+    init(text: String) { self.text = text }
+    func transcribe(audioArray: [Float], language: String?, detectLanguage: Bool,
+                    promptTokens: [Int]?) async throws -> [any WhisperKitSegment] {
+        var it = unblockEvent.stream.makeAsyncIterator()
+        _ = await it.next()
+        struct S: WhisperKitSegment { let text: String }
+        return [S(text: text)]
+    }
+    func unblock() {
+        unblockEvent.continuation.yield(())
+        unblockEvent.continuation.finish()
+    }
+}
+
+private final class ThrowingKit: WhisperKitTranscribing, @unchecked Sendable {
+    struct Boom: Error {}
+    func transcribe(audioArray: [Float], language: String?, detectLanguage: Bool,
+                    promptTokens: [Int]?) async throws -> [any WhisperKitSegment] {
+        throw Boom()
+    }
+}
+
+private struct NoOpPersister: DictationPersisting {
+    func persist(samples: [Float], snapshot: ServingSnapshot, startedAt: Date,
+                 durationMs: Int, rawText: String, finalText: String) async {}
+}
+
+private actor SpyPersister: DictationPersisting {
+    struct Insert: Sendable {
+        let profileName: String
+        let modelID: String
+        let rawText: String
+        let finalText: String
+    }
+    private(set) var inserts: [Insert] = []
+    func persist(samples: [Float], snapshot: ServingSnapshot, startedAt: Date,
+                 durationMs: Int, rawText: String, finalText: String) async {
+        inserts.append(Insert(profileName: snapshot.profileName, modelID: snapshot.modelID,
+                              rawText: rawText, finalText: finalText))
+    }
+    func getInserts() -> [Insert] { inserts }
+}
+
+private func waitUntilIdle(_ runner: Runner) async {
+    for _ in 0..<200 {
+        if runner.state == .idle { return }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+    XCTFail("timed out waiting for runner to return to .idle")
+}
+
+private func waitForState(_ runner: Runner, _ target: Runner.State) async throws {
+    for _ in 0..<200 {
+        if runner.state == target { return }
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    throw NSError(domain: "test", code: 0,
+                  userInfo: [NSLocalizedDescriptionKey: "timed out waiting for \(target)"])
+}
+
+final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _now: TimeInterval = 0
+    var now: TimeInterval {
+        get { lock.lock(); defer { lock.unlock() }; return _now }
+        set { lock.lock(); _now = newValue; lock.unlock() }
+    }
+    func date() -> Date { Date(timeIntervalSince1970: now) }
+}
+
+actor SpyPaster: Pasting {
+    var calls: [String] = []
+    func paste(_ text: String) async { calls.append(text) }
+    func getCalls() -> [String] { calls }
+}
+
+final class SlowStopRecorder: AudioRecording, @unchecked Sendable {
+    private let stopGate = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var _active = false
+    private var _startCount = 0
+    var startCount: Int { lock.lock(); defer { lock.unlock() }; return _startCount }
+    func start() throws { lock.lock(); defer { lock.unlock() }; _active = true; _startCount += 1 }
+    func stop() -> [Float] {
+        stopGate.wait()
+        lock.lock(); defer { lock.unlock() }
+        _active = false
+        return [0.0]
+    }
+    func abortIfActive() { lock.lock(); defer { lock.unlock() }; _active = false }
+    func unblockStop() { stopGate.signal() }
+}
+
+// MARK: - Post-process + persist tests (new)
+
+final class RunnerPostProcessTests: XCTestCase {
+    private func rule(_ pattern: String, _ replacement: String) -> ReplacementRule {
+        ReplacementRule(id: 0, profileID: "w", pattern: pattern, replacement: replacement,
+                        isRegex: false, caseSensitive: false, wordBoundary: true, sortOrder: 0)
+    }
+
+    func testFullCycle_appliesRules_andPersistsViaSnapshot() async throws {
+        let rec = FakeAudioRecorder()
+        let tr = await makeTranscriber(FixedKit(text: "Quest rocks"),
+                                       profileName: "Work", modelID: "m-work",
+                                       rules: [rule("Quest", "Questable")])
+        let paster = SpyPaster()
+        let persister = SpyPersister()
+        let runner = Runner(recorder: rec, transcriber: tr, paster: paster,
+                            persister: persister, minHoldMs: 0)
+        runner.onPress()
+        rec.push([0.5])                    // non-empty so transcribe runs
+        runner.onRelease()
+        await waitUntilIdle(runner)
+
+        let pasted = await paster.getCalls()
+        XCTAssertEqual(pasted, ["Questable rocks"])
+        let inserts = await persister.getInserts()
+        XCTAssertEqual(inserts.count, 1)
+        XCTAssertEqual(inserts.first?.profileName, "Work")
+        XCTAssertEqual(inserts.first?.modelID, "m-work")
+        XCTAssertEqual(inserts.first?.rawText, "Quest rocks")
+        XCTAssertEqual(inserts.first?.finalText, "Questable rocks")
+    }
+
+    func testPersistenceCalledOnce_andPasteHappens() async throws {
+        let rec = FakeAudioRecorder()
+        let tr = await makeTranscriber(FixedKit(text: "hi"))
+        let paster = SpyPaster()
+        let persister = SpyPersister()
+        let runner = Runner(recorder: rec, transcriber: tr, paster: paster,
+                            persister: persister, minHoldMs: 0)
+        runner.onPress()
+        rec.push([0.5])
+        runner.onRelease()
+        await waitUntilIdle(runner)
+
+        let pasteCalls = await paster.getCalls()
+        let insertCount = await persister.getInserts().count
+        XCTAssertEqual(pasteCalls, ["hi"])
+        XCTAssertEqual(insertCount, 1)
+    }
+}
+
+// MARK: - State-machine tests (migrated)
+
 final class RunnerTests: XCTestCase {
     func testFullCycle_recordsTranscribesPastes() async throws {
         let rec = FakeAudioRecorder()
-        let tr = FakeTranscriber(text: "hello world")
+        let tr = await makeTranscriber(FixedKit(text: "hello world"))
         let paster = SpyPaster()
         let runner = Runner(
             recorder: rec,
             transcriber: tr,
             paster: paster,
+            persister: NoOpPersister(),
             minHoldMs: 0,
             clock: { Date(timeIntervalSince1970: 0) }
         )
 
         runner.onPress()
+        rec.push([0.5])                    // non-empty so transcribe runs
         // Snapshot state before release.
         XCTAssertEqual(runner.state, .recording)
         runner.onRelease()
@@ -27,13 +202,14 @@ final class RunnerTests: XCTestCase {
 
     func testShortPress_discardsAndDoesNotPaste() async {
         let rec = FakeAudioRecorder()
-        let tr = FakeTranscriber(text: "x")
+        let tr = await makeTranscriber(FixedKit(text: "x"))
         let paster = SpyPaster()
         let testClock = TestClock()
         let runner = Runner(
             recorder: rec,
             transcriber: tr,
             paster: paster,
+            persister: NoOpPersister(),
             minHoldMs: 200,
             clock: { testClock.date() }
         )
@@ -50,16 +226,18 @@ final class RunnerTests: XCTestCase {
 
     func testEmptyTranscript_doesNotPaste() async throws {
         let rec = FakeAudioRecorder()
-        let tr = FakeTranscriber(text: "   ")
+        let tr = await makeTranscriber(FixedKit(text: "   "))
         let paster = SpyPaster()
         let runner = Runner(
             recorder: rec,
             transcriber: tr,
             paster: paster,
+            persister: NoOpPersister(),
             minHoldMs: 0
         )
 
         runner.onPress()
+        rec.push([0.5])                    // non-empty so transcribe runs; kit returns "   "
         runner.onRelease()
         await waitUntilIdle(runner)
 
@@ -69,16 +247,19 @@ final class RunnerTests: XCTestCase {
 
     func testPressDuringTranscribing_isRejected() async throws {
         let rec = FakeAudioRecorder()
-        let tr = BlockingTranscriber(text: "result")
+        let kit = BlockingKit(text: "result")
+        let tr = await makeTranscriber(kit)
         let paster = SpyPaster()
         let runner = Runner(
             recorder: rec,
             transcriber: tr,
             paster: paster,
+            persister: NoOpPersister(),
             minHoldMs: 0
         )
 
         runner.onPress()
+        rec.push([0.5])                    // non-empty so transcribe runs (and blocks)
         runner.onRelease()
         // Wait until the worker has actually entered transcribe and is blocked.
         try await waitForState(runner, .transcribing)
@@ -87,7 +268,7 @@ final class RunnerTests: XCTestCase {
         XCTAssertEqual(runner.state, .transcribing)
         XCTAssertEqual(rec.startCount, 1)   // not 2
 
-        tr.unblock()                        // let the worker finish
+        kit.unblock()                       // let the worker finish
         await waitUntilIdle(runner)
         let callsResult = await paster.getCalls()
         XCTAssertEqual(callsResult, ["result"])
@@ -95,12 +276,13 @@ final class RunnerTests: XCTestCase {
 
     func testPressDuringStopping_isRejected() async throws {
         let rec = SlowStopRecorder()
-        let tr = FakeTranscriber(text: "ok")
+        let tr = await makeTranscriber(FixedKit(text: "ok"))
         let paster = SpyPaster()
         let runner = Runner(
             recorder: rec,
             transcriber: tr,
             paster: paster,
+            persister: NoOpPersister(),
             minHoldMs: 0
         )
 
@@ -120,30 +302,34 @@ final class RunnerTests: XCTestCase {
 
     func testTranscribeException_caughtLoopContinues() async throws {
         let rec = FakeAudioRecorder()
-        let tr = ThrowingTranscriber()
+        let tr = await makeTranscriber(ThrowingKit())
         let paster = SpyPaster()
         let runner = Runner(
             recorder: rec,
             transcriber: tr,
             paster: paster,
+            persister: NoOpPersister(),
             minHoldMs: 0
         )
 
         runner.onPress()
+        rec.push([0.5])                    // non-empty so transcribe runs (and throws)
         runner.onRelease()
         await waitUntilIdle(runner)
 
         let callsAfterThrow = await paster.getCalls()
         XCTAssertEqual(callsAfterThrow, [])
         // Second cycle still works.
-        let tr2 = FakeTranscriber(text: "second")
+        let tr2 = await makeTranscriber(FixedKit(text: "second"))
         let runner2 = Runner(
             recorder: rec,
             transcriber: tr2,
             paster: paster,
+            persister: NoOpPersister(),
             minHoldMs: 0
         )
         runner2.onPress()
+        rec.push([0.5])                    // non-empty so transcribe runs
         runner2.onRelease()
         await waitUntilIdle(runner2)
         let callsSecond = await paster.getCalls()
@@ -152,12 +338,13 @@ final class RunnerTests: XCTestCase {
 
     func testShutdown_abortsRecordingAndReturnsToIdle() async {
         let rec = FakeAudioRecorder()
-        let tr = FakeTranscriber()
+        let tr = await makeTranscriber(FixedKit())
         let paster = SpyPaster()
         let runner = Runner(
             recorder: rec,
             transcriber: tr,
             paster: paster,
+            persister: NoOpPersister(),
             minHoldMs: 0
         )
 
@@ -167,111 +354,4 @@ final class RunnerTests: XCTestCase {
         XCTAssertEqual(runner.state, .idle)
         XCTAssertGreaterThanOrEqual(rec.abortCount, 1)
     }
-
-    // MARK: - Helpers
-
-    private func waitUntilIdle(_ runner: Runner) async {
-        for _ in 0..<200 {
-            if runner.state == .idle { return }
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
-        XCTFail("timed out waiting for runner to return to .idle")
-    }
-
-    private func waitForState(_ runner: Runner, _ target: Runner.State) async throws {
-        for _ in 0..<200 {
-            if runner.state == target { return }
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
-        throw NSError(domain: "test", code: 0,
-                      userInfo: [NSLocalizedDescriptionKey: "timed out waiting for \(target)"])
-    }
-}
-
-// MARK: - Test helpers
-
-final class TestClock: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _now: TimeInterval = 0
-    var now: TimeInterval {
-        get { lock.lock(); defer { lock.unlock() }; return _now }
-        set { lock.lock(); _now = newValue; lock.unlock() }
-    }
-    func date() -> Date { Date(timeIntervalSince1970: now) }
-}
-
-final class FakeTranscriber: Transcribing, @unchecked Sendable {
-    private let text: String
-    private(set) var calls: [[Float]] = []
-    private let lock = NSLock()
-
-    init(text: String = "hello") { self.text = text }
-
-    func transcribe(_ samples: [Float]) async throws -> String {
-        lock.withLock { calls.append(samples) }
-        return text
-    }
-}
-
-final class BlockingTranscriber: Transcribing, @unchecked Sendable {
-    private let text: String
-    private let unblockEvent = AsyncStream<Void>.makeStream()
-
-    init(text: String) { self.text = text }
-
-    func transcribe(_ samples: [Float]) async throws -> String {
-        var it = unblockEvent.stream.makeAsyncIterator()
-        _ = await it.next()
-        return text
-    }
-
-    func unblock() {
-        unblockEvent.continuation.yield(())
-        unblockEvent.continuation.finish()
-    }
-}
-
-final class ThrowingTranscriber: Transcribing, @unchecked Sendable {
-    struct Boom: Error {}
-    func transcribe(_ samples: [Float]) async throws -> String { throw Boom() }
-}
-
-actor SpyPaster: Pasting {
-    var calls: [String] = []
-    func paste(_ text: String) async {
-        calls.append(text)
-    }
-    func getCalls() -> [String] { calls }
-}
-
-final class SlowStopRecorder: AudioRecording, @unchecked Sendable {
-    private let stopGate = DispatchSemaphore(value: 0)
-    private let lock = NSLock()
-    private var _active = false
-    private var _startCount = 0
-
-    var startCount: Int {
-        lock.lock(); defer { lock.unlock() }
-        return _startCount
-    }
-
-    func start() throws {
-        lock.lock(); defer { lock.unlock() }
-        _active = true
-        _startCount += 1
-    }
-
-    func stop() -> [Float] {
-        stopGate.wait()
-        lock.lock(); defer { lock.unlock() }
-        _active = false
-        return [0.0]
-    }
-
-    func abortIfActive() {
-        lock.lock(); defer { lock.unlock() }
-        _active = false
-    }
-
-    func unblockStop() { stopGate.signal() }
 }

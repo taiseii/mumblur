@@ -1,6 +1,19 @@
 import Foundation
 import os
 
+/// Persistence seam consumed by the dictation pipeline. The concrete implementation
+/// is `RetentionAwarePersister` (Task 21.5); the protocol takes the samples buffer
+/// so the persister can write audio when retention is enabled. Persist failures are
+/// handled inside the persister and never propagate (paste already happened).
+public protocol DictationPersisting: Sendable {
+    func persist(samples: [Float],
+                 snapshot: ServingSnapshot,
+                 startedAt: Date,
+                 durationMs: Int,
+                 rawText: String,
+                 finalText: String) async
+}
+
 public final class Runner: @unchecked Sendable {
     public enum State: String, Sendable {
         case idle
@@ -11,8 +24,9 @@ public final class Runner: @unchecked Sendable {
 
     public init(
         recorder: AudioRecording,
-        transcriber: Transcribing,
+        transcriber: Transcriber,
         paster: Pasting,
+        persister: any DictationPersisting,
         minHoldMs: Int = 200,
         clock: @escaping @Sendable () -> Date = { Date() },
         onStateChange: @escaping @Sendable (State) -> Void = { _ in }
@@ -20,6 +34,7 @@ public final class Runner: @unchecked Sendable {
         self.recorder = recorder
         self.transcriber = transcriber
         self.paster = paster
+        self.persister = persister
         self.minHoldMs = minHoldMs
         self.clock = clock
         self.onStateChange = onStateChange
@@ -70,14 +85,12 @@ public final class Runner: @unchecked Sendable {
         lock.withLock { $0.state = .transcribing }
         onStateChange(.transcribing)
 
+        let startedAt = snap.pressTime
         let task: Task<Void, Never> = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
-            await self.doWork(samples: samples)
+            await self.doWork(samples: samples, startedAt: startedAt, durationMs: heldMs)
         }
 
-        // If doWork already finished and reset state to .idle, do NOT overwrite
-        // it — cancel the task as a no-op and leave state alone. Otherwise store
-        // the handle so shutdown() can cancel it.
         let shouldCancel: Bool = lock.withLock { s in
             guard s.state == .transcribing else { return true }
             s.worker = task
@@ -108,14 +121,16 @@ public final class Runner: @unchecked Sendable {
     }
 
     private let recorder: AudioRecording
-    private let transcriber: Transcribing
+    private let transcriber: Transcriber
     private let paster: Pasting
+    private let persister: any DictationPersisting
+    private let postProcessor = TranscriptPostProcessor()
     private let minHoldMs: Int
     private let clock: @Sendable () -> Date
     private let onStateChange: @Sendable (State) -> Void
     private let lock: OSAllocatedUnfairLock<MutableState>
 
-    private func doWork(samples: [Float]) async {
+    private func doWork(samples: [Float], startedAt: Date, durationMs: Int) async {
         defer {
             lock.withLock { s in
                 s.state = .idle
@@ -124,11 +139,20 @@ public final class Runner: @unchecked Sendable {
             onStateChange(.idle)
         }
         do {
-            let text = try await transcriber.transcribe(samples)
-            guard !Task.isCancelled,
-                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            else { return }
-            await paster.paste(text)
+            let output = try await transcriber.transcribe(samples)
+            guard !Task.isCancelled else { return }
+            let finalText = postProcessor.apply(output.rawText, rules: output.snapshot.rules)
+            guard !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            await paster.paste(finalText)
+            // Awaited on the worker (already off the UI). Persist failures are handled
+            // inside the persister and never propagate — paste already happened.
+            await persister.persist(
+                samples: samples,
+                snapshot: output.snapshot,
+                startedAt: startedAt,
+                durationMs: durationMs,
+                rawText: output.rawText,
+                finalText: finalText)
         } catch is CancellationError {
             Logger.runner.debug("worker cancelled")
         } catch {

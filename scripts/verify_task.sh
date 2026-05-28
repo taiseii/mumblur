@@ -160,6 +160,13 @@ case "$TASK" in
             || fail "ModelManager missing generation guard"
         core_test
         ;;
+    20)
+        bash "$0" 19
+        grep -q 'protocol DictationPersisting' MumblurCore/Sources/MumblurCore/Runner.swift
+        grep -q 'postProcessor.apply' MumblurCore/Sources/MumblurCore/Runner.swift
+        grep -q 'await paster.paste' MumblurCore/Sources/MumblurCore/Runner.swift
+        core_test
+        ;;
     *)
         fail "unknown task: $TASK"
         ;;
