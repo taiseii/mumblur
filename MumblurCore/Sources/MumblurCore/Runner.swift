@@ -27,6 +27,7 @@ public final class Runner: @unchecked Sendable {
         transcriber: Transcriber,
         paster: Pasting,
         persister: any DictationPersisting,
+        editor: any TranscriptEditing = NoOpEditor(),
         minHoldMs: Int = 200,
         clock: @escaping @Sendable () -> Date = { Date() },
         onStateChange: @escaping @Sendable (State) -> Void = { _ in }
@@ -35,6 +36,7 @@ public final class Runner: @unchecked Sendable {
         self.transcriber = transcriber
         self.paster = paster
         self.persister = persister
+        self.editor = editor
         self.minHoldMs = minHoldMs
         self.clock = clock
         self.onStateChange = onStateChange
@@ -141,6 +143,7 @@ public final class Runner: @unchecked Sendable {
     private let transcriber: Transcriber
     private let paster: Pasting
     private let persister: any DictationPersisting
+    private let editor: any TranscriptEditing
     private let postProcessor = TranscriptPostProcessor()
     private let minHoldMs: Int
     private let clock: @Sendable () -> Date
@@ -158,11 +161,14 @@ public final class Runner: @unchecked Sendable {
         do {
             let output = try await transcriber.transcribe(samples)
             guard !Task.isCancelled else { return }
-            let finalText = postProcessor.apply(output.rawText, rules: output.snapshot.rules)
+            var text = output.rawText
+            if output.snapshot.llmEdit.enabled {
+                text = try await editor.editFailOpen(text, instructions: output.snapshot.llmEdit.prompt)
+                guard !Task.isCancelled else { return }   // do not paste a cancelled run
+            }
+            let finalText = postProcessor.apply(text, rules: output.snapshot.rules)
             guard !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             await paster.paste(finalText)
-            // Awaited on the worker (already off the UI). Persist failures are handled
-            // inside the persister and never propagate — paste already happened.
             await persister.persist(
                 samples: samples,
                 snapshot: output.snapshot,
