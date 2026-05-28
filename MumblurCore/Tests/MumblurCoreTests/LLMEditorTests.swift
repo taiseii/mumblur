@@ -119,6 +119,25 @@ final class LLMEditorBehaviorTests: XCTestCase {
         XCTAssertLessThan(elapsed, 2.0)
     }
 
+    func testExternalCancellation_propagatesNotFailOpen() async throws {
+        StubURLProtocol.stallSeconds = 5.0          // keep the request in-flight
+        StubURLProtocol.handler = { _ in (200, chatBody("late")) }
+        let ed = OpenAICompatibleEditor(
+            config: LLMServerConfig(enabled: true, model: "q", timeoutMs: 10_000), // long, so the timeout race won't fire first
+            session: stubSession())
+        let task = Task { try await ed.editFailOpen("raw", instructions: "fix") }
+        try await Task.sleep(nanoseconds: 200_000_000)   // let the request start
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("expected cancellation to propagate, but it returned a value (fail-open)")
+        } catch is CancellationError {
+            // expected — cancellation propagated, not swallowed
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+    }
+
     func testRequestBody_hasSystemAndUserMessages() async throws {
         nonisolated(unsafe) var captured: Data?
         StubURLProtocol.handler = { req in

@@ -108,7 +108,10 @@ public actor OpenAICompatibleEditor: TranscriptEditing {
             return trimmed.isEmpty ? text : trimmed
         } catch is CancellationError {
             throw CancellationError()
+        } catch let e as URLError where e.code == .cancelled {
+            throw CancellationError()   // URLSession surfaces task cancellation as URLError.cancelled
         } catch {
+            if Task.isCancelled { throw CancellationError() }   // belt-and-suspenders
             Logger.transcribe.info("LLM edit failed open: \(error.localizedDescription, privacy: .public)")
             return text
         }
