@@ -11,11 +11,21 @@ public struct ServingSnapshot: Equatable, Sendable {
     public let language: String?
     public let prompt: PromptPayload
     public let rules: [ReplacementRule]
+    public let llmEdit: LLMEditConfig
 
     public init(profileID: String, profileName: String, modelID: String,
-                language: String?, prompt: PromptPayload, rules: [ReplacementRule]) {
+                language: String?, prompt: PromptPayload, rules: [ReplacementRule],
+                llmEdit: LLMEditConfig = .disabled) {
         self.profileID = profileID; self.profileName = profileName
         self.modelID = modelID; self.language = language
         self.prompt = prompt; self.rules = rules
+        self.llmEdit = llmEdit
+    }
+
+    /// Copy with a replaced `llmEdit` — used by `Transcriber.updateLLMEdit` to
+    /// patch active-profile AI settings without a model reload.
+    public func with(llmEdit: LLMEditConfig) -> ServingSnapshot {
+        ServingSnapshot(profileID: profileID, profileName: profileName, modelID: modelID,
+                        language: language, prompt: prompt, rules: rules, llmEdit: llmEdit)
     }
 }
