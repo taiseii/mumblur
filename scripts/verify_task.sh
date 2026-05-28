@@ -237,6 +237,15 @@ case "$TASK" in
         grep -q 'AboutSettingsView'  App/Settings/SettingsScene.swift
         app_build
         ;;
+    27)
+        bash "$0" 26
+        grep -q 'SMAppService' App/AppCoordinator.swift || fail "missing SMAppService wiring"
+        grep -q 'Settings…' App/MenuBarContent.swift     || fail "missing Settings… item"
+        grep -q 'openSettingsRequest' App/MenuBarContent.swift \
+            || fail "menu-bar Settings… must post .openSettingsRequest (not NSApp.sendAction)"
+        grep -q 'Profile: ' App/MenuBarContent.swift     || fail "missing profile switcher"
+        app_build
+        ;;
     *)
         fail "unknown task: $TASK"
         ;;
