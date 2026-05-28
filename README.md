@@ -1,4 +1,4 @@
-# mumbler
+# mumblur
 
 Local push-to-talk dictation for macOS Apple Silicon, using a `whisper-large-v3-turbo` model running in-process via `pywhispercpp` with Metal acceleration.
 
