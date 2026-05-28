@@ -13,6 +13,8 @@ struct SettingsScene: View {
             TuningSettingsView()   .tabItem { Label("Tuning",   systemImage: "waveform.path.ecg") }
             DataSettingsView(coordinator: coordinator)
                 .tabItem { Label("Data", systemImage: "internaldrive") }
+            AISettingsView(coordinator: coordinator)
+                .tabItem { Label("AI Editing", systemImage: "sparkles") }
             AboutSettingsView()    .tabItem { Label("About",    systemImage: "info.circle") }
         }
         .frame(width: 720, height: 460)
