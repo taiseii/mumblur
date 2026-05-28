@@ -3,6 +3,9 @@
 **Date:** 2026-05-28
 **Status:** Design approved, ready for implementation plan
 **Depends on:** the shipped push-to-talk MVP (`App/`, `MumblurCore/`)
+**Review:** schema validated over two Codex passes; full spec validated over a third
+(holistic) Codex pass. The serving-snapshot concurrency model (§9.1), prompt
+tokenization (§6.3), and calibration scoring semantics (§10) are products of that pass.
 
 ## 1. Summary
 
@@ -71,22 +74,27 @@ App/
     DataSettingsView.swift
     AboutSettingsView.swift
 MumblurCore/Sources/MumblurCore/
-  Profile.swift                   NEW value type (+ renderedPrompt)
+  Profile.swift                   NEW value type (config only; no prompt tokens — see PromptPayload)
   ReplacementRule.swift           NEW value type
+  PromptPayload.swift             NEW ({sourceText, promptTokens:[Int], omittedTerms})
+  ServingSnapshot.swift           NEW (immutable bundle actually serving dictation; see §9.1)
+  PromptBuilder.swift             NEW (renders profile → PromptPayload via a loaded tokenizer, capped)
   TranscriptPostProcessor.swift   NEW (applies rules)
-  ModelManager.swift              NEW (list/download/swap models; publishes per-model state)
+  WERNormalizer.swift             NEW (normalizes text before WER + before mining)
+  ModelManager.swift              NEW (list/download/load models; generation-guarded swap; per-model state)
   Storage/                        NEW
     Database.swift                GRDB connection, PRAGMA foreign_keys, migrations
     SettingsStore.swift           Profile CRUD, active-profile pointer, soft-delete, hard-purge
     TranscriptStore.swift         Insert / stats / export
-    AudioStore.swift              Optional WAV persistence, sha256, retention sweeper
+    AudioStore.swift              Optional WAV persistence, sha256, retention sweeper, orphan cleanup
   Tuning/                         NEW
-    CalibrationScripts.swift      Fixed scripts (constants) + hashing
+    CalibrationScripts.swift      Fixed scripts (constants) + hashing + mining/eval split
+    CalibrationController.swift   Owns recording for the ceremony; suspends the global Runner/hotkey
     WERCalculator.swift           Token-level Levenshtein WER (scoring_version 'wer_v1')
-    ErrorMiner.swift              Aggregates substitution pairs across samples
-    SuggestionGenerator.swift     Proposes vocab terms + replacement rules
-  Transcriber.swift               (extended — transcribe(samples, language:, initialPrompt:))
-  Runner.swift                    (extended — resolves active profile; post-processes; persists)
+    ErrorMiner.swift              Aligns ground-truth vs raw output; mines produced→expected pairs
+    SuggestionGenerator.swift     Proposes vocab terms + replacement rules (support/precision gated)
+  Transcriber.swift               (extended — actor holds a ServingSnapshot; transcribe returns raw + snapshot)
+  Runner.swift                    (extended — uses the serving snapshot; post-processes; persists)
 ```
 
 Single GRDB connection owned by `Database`, injected into stores. Stores are `actor`s
@@ -96,7 +104,9 @@ decorative).
 
 Storage location: `~/Library/Application Support/Mumblur/`
 - `mumblur.sqlite` (+ `-wal`, `-shm`)
-- `clips/<transcript_id>.wav` — general dictation, only when retention enabled
+- `clips/<uuid>.wav` — general dictation, only when retention enabled. Filename is a
+  UUID generated **before** the DB insert (the transcript row id is not known yet);
+  see §6.1 for the write-then-insert protocol.
 - `clips/calibration/<run_id>/<sample_index>.wav` — always retained
 
 ## 6. Data model (SQLite via GRDB, schema v1)
@@ -190,7 +200,11 @@ CREATE TABLE calibration_run (
     started_at              INTEGER NOT NULL CHECK(started_at >= 0),
     completed_at            INTEGER CHECK(completed_at IS NULL OR completed_at >= started_at),
     model_id                TEXT NOT NULL,
-    overall_wer             REAL CHECK(overall_wer IS NULL OR overall_wer >= 0),
+    -- Run-level aggregates are computed over the EVALUATION set only (held-out from
+    -- mining) to avoid reporting overfit gains. Both raw (pre-rules) and final
+    -- (post-rules) are kept so the trend chart can show the rule contribution.
+    eval_raw_wer            REAL CHECK(eval_raw_wer IS NULL OR eval_raw_wer >= 0),
+    eval_final_wer          REAL CHECK(eval_final_wer IS NULL OR eval_final_wer >= 0),
     notes                   TEXT
 );
 CREATE INDEX idx_calibration_run_profile_script_started_at
@@ -200,10 +214,13 @@ CREATE TABLE calibration_sample (
     id              INTEGER PRIMARY KEY,
     run_id          INTEGER NOT NULL REFERENCES calibration_run(id) ON DELETE CASCADE,
     sample_index    INTEGER NOT NULL,
+    set_role        TEXT NOT NULL CHECK(set_role IN ('mining','eval')),  -- held-out split
     status          TEXT NOT NULL CHECK(status IN ('recorded','transcribed','failed')),
     ground_truth    TEXT NOT NULL,
-    produced_text   TEXT,
-    wer             REAL CHECK(wer IS NULL OR wer >= 0),
+    raw_text        TEXT,                       -- Whisper output, pre-rules (for mining)
+    final_text      TEXT,                       -- after replacement rules (for trend)
+    raw_wer         REAL CHECK(raw_wer IS NULL OR raw_wer >= 0),
+    final_wer       REAL CHECK(final_wer IS NULL OR final_wer >= 0),
     error_message   TEXT,
     duration_ms     INTEGER NOT NULL CHECK(duration_ms >= 0),
     audio_rel_path  TEXT NOT NULL CHECK(audio_rel_path <> ''),
@@ -213,10 +230,14 @@ CREATE TABLE calibration_sample (
     channels        INTEGER NOT NULL CHECK(channels > 0),
     pcm_encoding    TEXT NOT NULL CHECK(pcm_encoding <> ''),
     UNIQUE(run_id, sample_index),
-    -- transcribed rows carry result; recorded/failed rows do not
+    -- transcribed rows carry both raw+final result; recorded/failed rows carry none
     CHECK (
-        (status = 'transcribed' AND produced_text IS NOT NULL AND wer IS NOT NULL) OR
-        (status IN ('recorded','failed') AND produced_text IS NULL AND wer IS NULL)
+        (status = 'transcribed'
+            AND raw_text IS NOT NULL AND final_text IS NOT NULL
+            AND raw_wer IS NOT NULL AND final_wer IS NOT NULL) OR
+        (status IN ('recorded','failed')
+            AND raw_text IS NULL AND final_text IS NULL
+            AND raw_wer IS NULL AND final_wer IS NULL)
     )
 );
 
@@ -246,8 +267,21 @@ CREATE TABLE app_setting (
   is the script slug; `script_hash` is captured at run time so re-runs against a
   modified script are detectable.
 - A calibration sample's WAV is written **before** transcription. The row is inserted
-  with `status='recorded'`, then UPDATEd atomically to `'transcribed'`
-  (with `produced_text` + `wer`) or `'failed'` (with `error_message`).
+  with `status='recorded'` (and its `set_role`), then UPDATEd atomically to
+  `'transcribed'` (with `raw_text`, `final_text`, `raw_wer`, `final_wer`) or
+  `'failed'` (with `error_message`).
+- **General-dictation audio persistence ordering** (when retention enabled): the WAV
+  filename is a UUID generated before insert. Write to a temp file → fsync → move into
+  place → compute sha256 → insert the transcript row *with* audio metadata in a single
+  transaction. If the file write fails, no row is written; if the app dies between move
+  and insert, an **orphan-cleanup sweep on launch** deletes `clips/*.wav` files not
+  referenced by any `transcript.audio_rel_path`. This avoids both rows-without-audio and
+  orphaned WAVs.
+- **Prompt tokens are model-coupled.** WhisperKit has no string `initialPrompt`; it
+  takes `DecodingOptions.promptTokens: [Int]`, and tokenization requires a loaded
+  model's `WhisperTokenizer`. So a profile's prompt is tokenized at model-swap-commit
+  time against the model being committed and frozen into the `ServingSnapshot`
+  (§6.3, §9.1) — never recomputed per dictation.
 - **Hard-purge** of a profile and all its data is one transaction:
   ```sql
   BEGIN;
@@ -264,6 +298,27 @@ CREATE TABLE app_setting (
 that differ only by Unicode normalization form could both exist. For a single-user app
 where names are typed by hand this is near-impossible, so we accept it rather than
 maintain a normalized `name_key` column. Revisit if it ever bites.
+
+## 6.3 WhisperKit API constraints (verified against vendored source)
+
+Confirmed against `argmax-oss-swift` as checked out in `MumblurCore/.build/checkouts/`:
+
+| Capability | Reality | Citation |
+|---|---|---|
+| Per-call text prompt | **No** `initialPrompt: String`. Decoder takes `DecodingOptions.promptTokens: [Int]?` (prepended to prefill) and `prefixTokens: [Int]?`. | `Configurations.swift:146-147,173-174,202-203` |
+| Text → tokens | `WhisperTokenizer.encode(text:) -> [Int]`, reachable via `WhisperKit.tokenizer` — only after a model is loaded. | `Models.swift:1151-1172`, `WhisperKit.swift:22` |
+| List models | `static func fetchAvailableModels(...)` | `WhisperKit.swift:219` |
+| Download w/ progress | `static func download(..., progressCallback: ProgressCallback?)` | `WhisperKit.swift:244-290` |
+| Load / unload | `loadModels(...)`, `unloadModels()`, `clearState()` | `WhisperKit.swift:358,487,501` |
+
+**Implications baked into this design:**
+- A profile's vocab + initial prompt are rendered to text by `PromptBuilder`, tokenized
+  with the loaded model's tokenizer, truncated to a token budget, and stored as a
+  `PromptPayload` inside the active `ServingSnapshot`.
+- "Switching models" = constructing a fresh `WhisperKit`/`loadModels`, then committing
+  it (not mutating a live instance) — see §9.1.
+- These facts should be re-confirmed by a tiny **integration spike** in Phase 2 before
+  the rest of the pipeline is built on them (§15).
 
 ## 7. Settings window
 
@@ -306,30 +361,97 @@ publishes per-model state: `notInstalled / downloading(progress) / installed / l
 - Download progress is surfaced in the Models and Tuning tabs. Picking an uninstalled
   model never blocks dictation on the current model.
 
+### 9.1 Serving snapshot & swap concurrency (Swift 6)
+
+The naive design — "resolve active profile at dictation time" while "the old model keeps
+serving until the new one loads" — can transcribe with model A while applying profile B's
+language/prompt/rules and persisting mismatched metadata. To prevent this, what actually
+serves dictation is a single immutable value:
+
+```swift
+struct ServingSnapshot: Sendable {
+    let profileID: String
+    let profileName: String
+    let modelID: String
+    let language: String?
+    let prompt: PromptPayload          // tokenized against THIS model
+    let rules: [ReplacementRule]
+}
+```
+
+- The `Transcriber` actor holds the current `ServingSnapshot` + its loaded pipeline and
+  returns the snapshot alongside the raw text, so the persisted row's
+  model/profile/prompt always match what produced it.
+- **Selecting** a profile/model sets a *pending* selection; it only becomes the serving
+  snapshot once its model is loaded and its prompt tokenized. Until then, dictation keeps
+  using the previous snapshot in full (model **and** profile config stay consistent).
+- **Actor reentrancy guard:** `ModelManager` carries a monotonic `generation` counter.
+  A swap captures its generation before awaiting the (slow) load; after the load it
+  commits **only if** its generation is still current, else it discards the result.
+  This prevents a slow older swap from clobbering a newer one. Obsolete downloads are
+  cancelled where the API allows.
+
+```swift
+actor ModelManager {
+    private var generation: UInt64 = 0
+    func requestSwap(to pending: PendingSelection) async {
+        generation += 1; let mine = generation
+        let pipeline = try await load(pending.modelID)          // slow; suspension point
+        let payload  = PromptBuilder.build(pending.profile, tokenizer: pipeline.tokenizer)
+        guard mine == generation else { pipeline.unload(); return }
+        await transcriber.commit(ServingSnapshot(...payload...), pipeline: pipeline)
+    }
+}
+```
+
 ## 10. Calibration ceremony
 
-Lives in `MumblurCore/Tuning/`. Flow:
+Lives in `MumblurCore/Tuning/`. A `CalibrationController` owns recording for the
+ceremony and **suspends the global hotkey/Runner** for its duration
+(`appCoordinator.suspendDictation(reason: .calibration)` / `resume...` in a `defer`),
+so a calibration recording can never be pasted into the frontmost app or stored as a
+normal transcript.
 
-1. **Start** — confirm active profile. Snapshot profile name/language/prompt and the
-   script hash into a new `calibration_run` (no `completed_at` yet).
-2. **Record loop** — present sentence *i*; user holds-to-record via the real
-   `AudioRecorder` path; persist WAV to `clips/calibration/<run_id>/<i>.wav`; insert a
-   `calibration_sample` with `status='recorded'` and audio integrity fields
-   (bytes, sha256, sample rate, channels, encoding).
-3. **Transcribe** — run each sample through the active model; UPDATE to `'transcribed'`
-   (+`produced_text`,`wer`) or `'failed'` (+`error_message`). WER via `WERCalculator`
-   (token-level Levenshtein; `scoring_version='wer_v1'`).
-4. **Mine** — `ErrorMiner` aggregates substitution pairs across samples;
-   `SuggestionGenerator` proposes vocab terms (frequent expected tokens Whisper missed)
-   and replacement rules (stable expected→produced mappings).
-5. **Review** — user accepts/rejects each suggestion; accepted ones are written to the
-   profile's `vocab_term` / `replacement_rule`. Set `overall_wer` and `completed_at`.
-6. **Re-measure (optional)** — re-run the script (or a held-out half) with the updated
-   profile → a new `calibration_run`. The Tuning tab charts WER across runs and shows
-   per-term hit-rate deltas.
+**Held-out split (mandatory).** Every script declares a `miningSet` and a disjoint
+`evaluationSet`. Suggestions are mined **only** from the mining set; the improvement the
+UI reports is the **evaluation-set** WER. This prevents reporting gains that are just
+overfit to the sentences we mined from.
+
+**Scoring is dual.** Each transcribed sample stores both `raw_wer` (Whisper output,
+pre-rules — what mining needs) and `final_wer` (after replacement rules — what the trend
+chart shows). All WER goes through a shared `WERNormalizer` (case, punctuation, number
+formatting, whitespace) feeding token-level Levenshtein `WERCalculator`
+(`scoring_version='wer_v1'`).
+
+Flow:
+
+1. **Start** — confirm active profile. Snapshot profile name/language/prompt + script
+   hash into a new `calibration_run` (no `completed_at`). Suspend dictation.
+2. **Record loop** — present sentence *i*; record via `CalibrationController`; persist
+   WAV to `clips/calibration/<run_id>/<i>.wav`; insert a `calibration_sample` with its
+   `set_role`, `status='recorded'`, and audio integrity fields.
+3. **Transcribe & score** — run each sample through the active model; compute `raw_text`
+   then `final_text` (rules applied) and their WERs; UPDATE to `'transcribed'` or, on
+   failure, `'failed'` (+`error_message`).
+4. **Mine (mining set only)** — `ErrorMiner` aligns `ground_truth` vs `raw_text` (post
+   `WERNormalizer`) and collects **produced→expected** substitution pairs (note the
+   direction: a replacement rule rewrites what Whisper *produced* into the *expected*
+   text). `SuggestionGenerator` emits:
+   - vocab terms: expected tokens frequently missed, for prompt biasing;
+   - replacement rules: produced→expected mappings that clear **support** (min
+     occurrences) and **precision** (the produced form maps to that expected form
+     consistently, not ambiguously) thresholds — so we don't generate rules that
+     corrupt correct output.
+5. **Review** — user accepts/rejects each suggestion; accepted ones write to the
+   profile's `vocab_term` / `replacement_rule`. Compute `eval_raw_wer` + `eval_final_wer`
+   over the evaluation set; set `completed_at`.
+6. **Re-measure** — run another `calibration_run` with the updated profile. The Tuning
+   tab charts evaluation-set `final_wer` across runs (with raw as a secondary series)
+   and shows per-term hit-rate deltas.
 
 **Honesty surface:** the ceremony intro and the About tab state plainly that this tunes
-the prompt and post-processing rules, **not** the model weights.
+the prompt and post-processing rules, **not** the model weights — and that the reported
+improvement is measured on held-out sentences.
 
 ## 11. Pipeline integration
 
@@ -337,21 +459,24 @@ the prompt and post-processing rules, **not** the model weights.
 
 ```
 onRelease → stop recording → samples
-  → resolve active profile (cached in Runner; refreshed on profile/active change)
-  → Transcriber.transcribe(samples, language: profile.language, initialPrompt: profile.renderedPrompt)
-      → raw_text
-  → TranscriptPostProcessor.apply(raw_text, rules: profile.rules) → final_text
-  → Paster.paste(final_text)
-  → TranscriptStore.insert(...)   (fire-and-forget actor write; never blocks paste)
+  → Transcriber.transcribe(samples)
+      → (rawText, servingSnapshot)          // snapshot = profile+model+prompt+rules that served
+  → TranscriptPostProcessor.apply(rawText, rules: servingSnapshot.rules) → finalText
+  → Paster.paste(finalText)
+  → persist using servingSnapshot's profile/model/language/prompt metadata
+      (write audio first if retention enabled, then insert row in one txn — §6.1)
 ```
 
-- `Transcriber.transcribe` signature becomes
-  `transcribe(_ samples:, language:, initialPrompt:)`. The previously hardcoded
-  `language: nil` and prompt-less call become profile-driven.
+- The `Transcriber` actor reads its current `ServingSnapshot` (language + tokenized
+  prompt already frozen) and returns it with the raw text, so persisted metadata always
+  matches what produced the text. The old hardcoded `language: nil` / prompt-less call
+  is gone (§9.1).
 - **Paste happens before the DB write.** Persistence must never delay the user seeing
-  their text; DB write failures log + surface a non-fatal badge.
-- General-dictation audio is persisted only when `retention_policy.enabled=1`; the WAV
-  write + sha256 happen on the store actor, off the hot path.
+  their text; DB write failures log + surface a non-fatal badge. (Persistence is still
+  off the hot path, but is no longer naive fire-and-forget: when retention is on it
+  follows the write-then-insert-in-one-transaction protocol with launch-time orphan
+  cleanup — §6.1.)
+- General-dictation audio is persisted only when `retention_policy.enabled=1`.
 
 ## 12. Error handling
 
@@ -366,18 +491,27 @@ onRelease → stop recording → samples
 
 ## 13. Testing
 
-- **`MumblurCoreTests`** (extend existing fast suite): `WERCalculator` (known string
-  pairs), `TranscriptPostProcessor` (literal/regex/case/word-boundary, rule ordering),
-  `ErrorMiner` / `SuggestionGenerator` (synthetic substitution sets),
-  `Profile.renderedPrompt`.
+- **`MumblurCoreTests`** (extend existing fast suite): `WERNormalizer` (case/punct/number
+  cases), `WERCalculator` (known string pairs incl. insert/delete/substitute),
+  `TranscriptPostProcessor` (literal/regex/case/word-boundary, rule ordering),
+  `ErrorMiner` (alignment + produced→expected direction), `SuggestionGenerator`
+  (support/precision thresholds reject ambiguous/garbage rules), `PromptBuilder`
+  (deterministic order, token-budget truncation, omitted-term reporting with a faked
+  tokenizer).
+- **Concurrency tests:** `ModelManager` generation guard — a slow older swap that
+  resumes after a newer one must **not** commit (faked loader with controllable delays);
+  serving-snapshot consistency (raw text + snapshot returned together).
 - **Storage tests** against a real in-memory GRDB DB (never mocked, per repo
   convention): migration applies cleanly; `PRAGMA foreign_keys=ON` verified; every
-  CHECK rejects bad rows; soft-delete + partial-unique-index name reuse; hard-purge
-  transaction; retention sweeper for both `days` and `count` caps.
-- **`ModelManager`** with a faked downloader/lister: state transitions, swap-while-serving.
+  CHECK rejects bad rows (incl. the new dual-WER calibration invariant and `set_role`);
+  soft-delete + partial-unique-index name reuse; hard-purge transaction; retention
+  sweeper for both `days` and `count` caps; audio orphan-cleanup sweep.
+- **Calibration scoring tests:** mining only touches `miningSet`; reported improvement
+  is `evaluationSet` WER; both `raw_wer` and `final_wer` recorded.
 - **Integration (gated by `MUMBLUR_RUN_SLOW`)**: extend the existing slow test — real
-  calibration of a 2-sentence script against the fixture; assert WER computed and
-  suggestions generated.
+  calibration of a small script against the fixture; assert raw+final WER computed and
+  threshold-gated suggestions generated. A separate Phase-2 spike test confirms
+  `promptTokens` biasing and model load/swap against real WhisperKit.
 
 ## 14. Dependencies
 
@@ -385,20 +519,37 @@ onRelease → stop recording → samples
 - SHA-256 via CryptoKit; WER trend chart via Swift Charts (both system frameworks).
   WER calculation is hand-rolled.
 
-## 15. Build order (maps to plan tasks)
+## 15. Build order (phased around integration boundaries)
 
+A flat linear order risks building `ModelManager` before the `Transcriber`/serving-
+snapshot API it must integrate with, and building the whole prompt path on unverified
+WhisperKit assumptions. Phased instead:
+
+**Phase 1 — Storage + value types**
 1. `Storage/Database.swift` — GRDB dep, connection, `PRAGMA foreign_keys`, v1 migration (full schema) + tests
-2. `Profile.swift`, `ReplacementRule.swift` value types + `renderedPrompt` + tests
+2. `Profile.swift`, `ReplacementRule.swift`, `PromptPayload.swift`, `ServingSnapshot.swift` value types + tests
 3. `Storage/SettingsStore.swift` (profile CRUD, active pointer, soft-delete, hard-purge) + tests
-4. `Storage/TranscriptStore.swift` + `AudioStore.swift` (WAV write, sha256, retention sweeper) + tests
-5. `TranscriptPostProcessor.swift` + tests
-6. `ModelManager.swift` + tests
-7. `Tuning/` (`CalibrationScripts`, `WERCalculator`, `ErrorMiner`, `SuggestionGenerator`) + tests
-8. `Transcriber` signature change + `Runner` integration + tests
-9. `AppCoordinator` — stores, active profile, `.swappingModel` state
-10. `Settings/` views (General → Profiles → Models → Tuning → Data → About)
-11. Menu bar: active-profile switcher + "Settings…" (⌘,)
-12. Launch-at-login (`SMAppService`)
+4. `Storage/TranscriptStore.swift` + `AudioStore.swift` (write-then-insert, sha256, retention sweeper, orphan cleanup) + tests
+
+**Phase 2 — WhisperKit reality spike (de-risk before building on it)**
+5. `PromptBuilder.swift` + a small integration spike: confirm `promptTokens` biasing,
+   tokenizer access, and model load/swap against real WhisperKit (gated slow test).
+   Lock the `Transcriber` API shape from what the spike proves.
+
+**Phase 3 — Serving + swap concurrency + pipeline**
+6. `Transcriber` change (holds `ServingSnapshot`, returns raw + snapshot) + tests
+7. `ModelManager.swift` (generation-guarded swap, download progress) + concurrency tests
+8. `Runner` integration (post-process, persist via snapshot) + tests
+9. `AppCoordinator` — stores, pending vs serving selection, `.swappingModel` state
+
+**Phase 4 — Tuning**
+10. `WERNormalizer`, `WERCalculator`, `ErrorMiner`, `SuggestionGenerator`, `CalibrationScripts` (with mining/eval split) + tests
+11. `CalibrationController` (owns recording; suspends Runner) + tests
+
+**Phase 5 — UI**
+12. `Settings/` views (General → Profiles → Models → Tuning → Data → About)
+13. Menu bar: active-profile switcher + "Settings…" (⌘,)
+14. Launch-at-login (`SMAppService`)
 
 ## 16. Future work (explicitly deferred)
 
