@@ -114,6 +114,38 @@ public actor SettingsStore {
         }
     }
 
+    public func llmServerConfig() throws -> LLMServerConfig {
+        try database.read { db in
+            func str(_ k: String) -> String? {
+                try? String.fetchOne(db, sql: "SELECT value FROM app_setting WHERE key=?",
+                                     arguments: [k])
+            }
+            var cfg = LLMServerConfig.default
+            if let v = str("llm.enabled")    { cfg.enabled = (v == "1") }
+            if let v = str("llm.base_url"), !v.isEmpty { cfg.baseURL = v }
+            if let v = str("llm.model")      { cfg.model = v }
+            if let v = str("llm.timeout_ms"), let n = Int(v) {
+                cfg.timeoutMs = LLMServerConfig.clampTimeout(n)
+            }
+            return cfg
+        }
+    }
+
+    public func setLLMServerConfig(_ cfg: LLMServerConfig) throws {
+        try database.write { db in
+            func put(_ k: String, _ v: String) throws {
+                try db.execute(sql: """
+                    INSERT INTO app_setting(key,value) VALUES(?,?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """, arguments: [k, v])
+            }
+            try put("llm.enabled", cfg.enabled ? "1" : "0")
+            try put("llm.base_url", cfg.baseURL)
+            try put("llm.model", cfg.model)
+            try put("llm.timeout_ms", String(LLMServerConfig.clampTimeout(cfg.timeoutMs)))
+        }
+    }
+
     public func addVocab(profileID: String, term: String) throws {
         try database.write { db in
             try db.execute(sql: """

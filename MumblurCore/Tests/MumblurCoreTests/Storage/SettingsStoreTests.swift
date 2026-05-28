@@ -87,6 +87,20 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertNotNil(shown)
     }
 
+    func testLLMServerConfig_roundTrips_andClampsTimeout() async throws {
+        let db = try AppDatabase(location: .inMemory)
+        let store = SettingsStore(database: db)
+        let initial = try await store.llmServerConfig()
+        XCTAssertEqual(initial, .default)  // unset → default
+        try await store.setLLMServerConfig(
+            LLMServerConfig(enabled: true, baseURL: "http://x:1", model: "q", timeoutMs: 999_999))
+        let back = try await store.llmServerConfig()
+        XCTAssertEqual(back.enabled, true)
+        XCTAssertEqual(back.baseURL, "http://x:1")
+        XCTAssertEqual(back.model, "q")
+        XCTAssertEqual(back.timeoutMs, 60_000)   // clamped
+    }
+
     func testUpdate_roundTripsLLMEditFields() async throws {
         let db = try AppDatabase(location: .inMemory)
         let store = SettingsStore(database: db)
