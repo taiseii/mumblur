@@ -173,6 +173,12 @@ case "$TASK" in
         need_file MumblurCore/Tests/MumblurCoreTests/Storage/RetentionAwarePersisterTests.swift
         core_test
         ;;
+    21)
+        bash "$0" 21.5
+        grep -q '\.swappingModel' App/AppCoordinator.swift || fail "missing .swappingModel state"
+        grep -q 'switchActiveProfile' App/AppCoordinator.swift
+        app_build
+        ;;
     *)
         fail "unknown task: $TASK"
         ;;

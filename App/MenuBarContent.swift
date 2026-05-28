@@ -14,6 +14,8 @@ struct MenuBarContent: View {
                 Label("Recording…", systemImage: "mic.fill").foregroundStyle(.red)
             case .transcribing:
                 Label("Transcribing…", systemImage: "waveform")
+            case .swappingModel:
+                Label("Switching model…", systemImage: "arrow.triangle.2.circlepath")
             case .permissionNeeded:
                 Label(coordinator.permissionMessage ?? "Grant permissions",
                       systemImage: "exclamationmark.triangle")
