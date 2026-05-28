@@ -1487,12 +1487,15 @@ final class PromptBuilderTests: XCTestCase {
     }
 
     func testTruncates_byTokenBudget_andReportsOmitted() throws {
+        // Source text starts as "Glossary: a, b, c, d" which the positional tokenizer
+        // sees as 5 whitespace-delimited tokens. Budget 4 drops only "d", leaving
+        // "Glossary: a, b, c" (4 tokens) — and reports ["d"] as omitted.
         let p = try PromptBuilder.build(
             initialPrompt: nil,
             vocab: ["a", "b", "c", "d"],
-            budget: .tokens(3),
+            budget: .tokens(4),
             tokenize: positionalTokenize)
-        XCTAssertEqual(p.promptTokens.count, 3)
+        XCTAssertEqual(p.promptTokens.count, 4)
         XCTAssertEqual(p.omittedTerms, ["d"])
     }
 
@@ -2198,6 +2201,128 @@ git commit -m "feat(runner): post-process via snapshot.rules; persist via Dictat
 
 ---
 
+# Phase 3.5 — Retention-aware dictation persistence
+
+> **Ordering note:** This phase (Task 21.5) runs **before** Task 21. `AppCoordinator`
+> in Task 21 instantiates `RetentionAwarePersister`, so that type must exist first.
+> The harness reflects this: `verify_task.sh 21.5` chains from `20`, and
+> `verify_task.sh 21` chains from `21.5`.
+
+## Task 21.5: RetentionAwarePersister + samples-buffer pass-through
+
+**Files:**
+- Create: `MumblurCore/Sources/MumblurCore/Storage/RetentionAwarePersister.swift`
+- Create: `MumblurCore/Tests/MumblurCoreTests/Storage/RetentionAwarePersisterTests.swift`
+- Modify: `MumblurCore/Sources/MumblurCore/Runner.swift` (worker passes its samples buffer into `DictationPersisting.persist`)
+- Modify: `scripts/verify_task.sh`
+
+- [ ] **Step 1: Write the failing tests**
+
+The persister must (a) when retention OFF, write **no** WAV and insert a text-only row; (b) when retention ON, stream the WAV to disk via `AudioStore.write`, then insert with audio metadata in a single transaction; (c) on DB insert failure, delete the freshly-written WAV (compensating delete).
+
+```swift
+// MumblurCore/Tests/MumblurCoreTests/Storage/RetentionAwarePersisterTests.swift
+import XCTest
+@testable import MumblurCore
+
+final class RetentionAwarePersisterTests: XCTestCase {
+    func testRetentionOff_noWAV_textOnlyRow() async throws { /* … */ }
+    func testRetentionOn_writesWAV_andRowReferencesIt() async throws { /* … */ }
+    func testInsertFailure_removesFreshlyWrittenWAV() async throws { /* … */ }
+}
+```
+
+- [ ] **Step 2: Implement `RetentionAwarePersister.swift`**
+
+```swift
+// MumblurCore/Sources/MumblurCore/Storage/RetentionAwarePersister.swift
+import Foundation
+import GRDB
+import os
+
+public actor RetentionAwarePersister: DictationPersisting {
+    private let database: Database
+    private let transcripts: TranscriptStore
+    private let audio: AudioStore
+
+    public init(database: Database, transcripts: TranscriptStore, audio: AudioStore) {
+        self.database = database; self.transcripts = transcripts; self.audio = audio
+    }
+
+    public func persist(samples: [Float], snapshot: ServingSnapshot,
+                        startedAt: Date, durationMs: Int,
+                        rawText: String, finalText: String) async {
+        let enabled = (try? readRetentionEnabled()) ?? false
+        if !enabled {
+            try? await transcripts.insertTextOnly(
+                profileID: snapshot.profileID, profileNameSnapshot: snapshot.profileName,
+                promptSnapshot: snapshot.prompt.sourceText.isEmpty ? nil : snapshot.prompt.sourceText,
+                startedAt: startedAt, durationMs: durationMs,
+                modelID: snapshot.modelID, language: snapshot.language,
+                rawText: rawText, finalText: finalText)
+            return
+        }
+        do {
+            let written = try await audio.write(samples: samples, sampleRateHz: 16000)
+            do {
+                try await transcripts.insertWithAudio(
+                    profileID: snapshot.profileID, profileNameSnapshot: snapshot.profileName,
+                    promptSnapshot: snapshot.prompt.sourceText.isEmpty ? nil : snapshot.prompt.sourceText,
+                    startedAt: startedAt, durationMs: durationMs,
+                    modelID: snapshot.modelID, language: snapshot.language,
+                    rawText: rawText, finalText: finalText,
+                    audio: .init(relPath: written.relPath, bytes: written.bytes,
+                                 sha256: written.sha256, sampleRateHz: 16000,
+                                 channels: 1, pcmEncoding: "pcm_s16le"))
+            } catch {
+                // Compensating delete — keep the FS consistent with the DB.
+                try? FileManager.default.removeItem(at: written.absoluteURL)
+                Logger.app.error("transcript insert failed; removed WAV: \(error.localizedDescription)")
+            }
+        } catch {
+            Logger.app.error("audio write failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func readRetentionEnabled() throws -> Bool {
+        try database.read { db in
+            let v = try Int.fetchOne(db, sql:
+                "SELECT enabled FROM retention_policy WHERE singleton=1") ?? 0
+            return v == 1
+        }
+    }
+}
+```
+
+- [ ] **Step 3: Modify `Runner` to capture and forward the samples buffer**
+
+The runner already has the samples buffer at the moment it hands them to the transcriber. Capture them into a local `let samples = …` and pass them into `persister.persist(samples:snapshot:startedAt:durationMs:rawText:finalText:)` after paste. (The `DictationPersisting` seam was introduced in Task 20 — this task supplies its concrete implementation.)
+
+- [ ] **Step 4: Extend `scripts/verify_task.sh`**
+
+```bash
+    21.5)
+        bash "$0" 20
+        need_file MumblurCore/Sources/MumblurCore/Storage/RetentionAwarePersister.swift
+        need_file MumblurCore/Tests/MumblurCoreTests/Storage/RetentionAwarePersisterTests.swift
+        core_test
+        ;;
+```
+
+**Critical chaining note:** `case "$TASK"` matches a literal string, so `21.5` is its own label. It chains from `20`; Task 21 chains from `21.5`; Task 22 chains from `21.5` too via Task 21. **Do not** use `21|21.5)` — that would require Task 21.5 files when verifying Task 21.
+
+- [ ] **Step 5: Verify and commit**
+
+```bash
+scripts/verify_task.sh 21.5
+git add MumblurCore/Sources/MumblurCore/Storage/RetentionAwarePersister.swift \
+        MumblurCore/Tests/MumblurCoreTests/Storage/RetentionAwarePersisterTests.swift \
+        MumblurCore/Sources/MumblurCore/Runner.swift scripts/verify_task.sh
+git commit -m "feat(storage): RetentionAwarePersister wires audio retention into dictation pipeline"
+```
+
+---
+
 ## Task 21: AppCoordinator — stores, pending vs serving selection, .swappingModel state
 
 > **REVISION v2 (read first):**
@@ -2464,7 +2589,7 @@ Expected: build succeeds.
 
 ```bash
     21)
-        bash "$0" 20
+        bash "$0" 21.5
         grep -q '\.swappingModel' App/AppCoordinator.swift || fail "missing .swappingModel state"
         grep -q 'switchActiveProfile' App/AppCoordinator.swift
         app_build
@@ -2478,129 +2603,6 @@ scripts/verify_task.sh 21
 git add App/AppCoordinator.swift scripts/verify_task.sh
 git commit -m "feat(app): AppCoordinator wires stores, pending/serving selection, .swappingModel"
 ```
-
----
-
-# Phase 3.5 — Retention-aware dictation persistence
-
-## Task 21.5 (NEW): RetentionAwarePersister + DictationRecorder buffer pass-through
-
-**Files:**
-- Create: `MumblurCore/Sources/MumblurCore/Storage/RetentionAwarePersister.swift`
-- Create: `MumblurCore/Tests/MumblurCoreTests/Storage/RetentionAwarePersisterTests.swift`
-- Modify: `MumblurCore/Sources/MumblurCore/Runner.swift` (worker passes its samples buffer into `DictationPersisting.persist`)
-- Modify: `scripts/verify_task.sh`
-
-- [ ] **Step 1: Write the failing tests**
-
-The persister must (a) when retention OFF, write **no** WAV and insert a text-only row; (b) when retention ON, stream the WAV to disk via `AudioStore.write`, then insert with audio metadata in a single transaction; (c) on DB insert failure, delete the freshly-written WAV (compensating delete); (d) snapshot the retention policy at insert time (later policy changes don't reinterpret older rows — this is just the row's audio metadata being intrinsic, no extra column needed beyond what's already in `transcript`).
-
-```swift
-// MumblurCore/Tests/MumblurCoreTests/Storage/RetentionAwarePersisterTests.swift
-import XCTest
-@testable import MumblurCore
-
-final class RetentionAwarePersisterTests: XCTestCase {
-    func testRetentionOff_noWAV_textOnlyRow() async throws { /* … */ }
-    func testRetentionOn_writesWAV_andRowReferencesIt() async throws { /* … */ }
-    func testInsertFailure_removesFreshlyWrittenWAV() async throws { /* … */ }
-}
-```
-
-- [ ] **Step 2: Implement `RetentionAwarePersister.swift`**
-
-```swift
-// MumblurCore/Sources/MumblurCore/Storage/RetentionAwarePersister.swift
-import Foundation
-import GRDB
-import os
-
-public actor RetentionAwarePersister: DictationPersisting {
-    private let database: Database
-    private let transcripts: TranscriptStore
-    private let audio: AudioStore
-
-    public init(database: Database, transcripts: TranscriptStore, audio: AudioStore) {
-        self.database = database; self.transcripts = transcripts; self.audio = audio
-    }
-
-    public func persist(samples: [Float], snapshot: ServingSnapshot,
-                        startedAt: Date, durationMs: Int,
-                        rawText: String, finalText: String) async {
-        let enabled = (try? readRetentionEnabled()) ?? false
-        if !enabled {
-            try? await transcripts.insertTextOnly(
-                profileID: snapshot.profileID, profileNameSnapshot: snapshot.profileName,
-                promptSnapshot: snapshot.prompt.sourceText.isEmpty ? nil : snapshot.prompt.sourceText,
-                startedAt: startedAt, durationMs: durationMs,
-                modelID: snapshot.modelID, language: snapshot.language,
-                rawText: rawText, finalText: finalText)
-            return
-        }
-        do {
-            let written = try await audio.write(samples: samples, sampleRateHz: 16000)
-            do {
-                try await transcripts.insertWithAudio(
-                    profileID: snapshot.profileID, profileNameSnapshot: snapshot.profileName,
-                    promptSnapshot: snapshot.prompt.sourceText.isEmpty ? nil : snapshot.prompt.sourceText,
-                    startedAt: startedAt, durationMs: durationMs,
-                    modelID: snapshot.modelID, language: snapshot.language,
-                    rawText: rawText, finalText: finalText,
-                    audio: .init(relPath: written.relPath, bytes: written.bytes,
-                                 sha256: written.sha256, sampleRateHz: 16000,
-                                 channels: 1, pcmEncoding: "pcm_s16le"))
-            } catch {
-                // Compensating delete — keep the FS consistent with the DB.
-                try? FileManager.default.removeItem(at: written.absoluteURL)
-                Logger.app.error("transcript insert failed; removed WAV: \(error.localizedDescription)")
-            }
-        } catch {
-            Logger.app.error("audio write failed: \(error.localizedDescription)")
-        }
-    }
-
-    private func readRetentionEnabled() throws -> Bool {
-        try database.read { db in
-            let v = try Int.fetchOne(db, sql:
-                "SELECT enabled FROM retention_policy WHERE singleton=1") ?? 0
-            return v == 1
-        }
-    }
-}
-```
-
-- [ ] **Step 3: Modify `Runner` to capture and forward the samples buffer**
-
-The runner already has the samples buffer at the moment it hands them to the transcriber. Capture them into a local `let samples = …` and pass them into `persister.persist(samples:snapshot:startedAt:durationMs:rawText:finalText:)` after paste.
-
-- [ ] **Step 4: Wire the persister in `AppCoordinator.bootstrap`**
-
-Replace any direct `transcripts` injection into `Runner` with a `RetentionAwarePersister(database: db, transcripts: transcripts, audio: audio)`.
-
-- [ ] **Step 5: Extend `scripts/verify_task.sh`**
-
-```bash
-    21.5)
-        bash "$0" 21
-        need_file MumblurCore/Sources/MumblurCore/Storage/RetentionAwarePersister.swift
-        need_file MumblurCore/Tests/MumblurCoreTests/Storage/RetentionAwarePersisterTests.swift
-        core_test
-        ;;
-```
-
-**Critical chaining note:** `case "$TASK"` matches a literal string, so `21.5` is its own label. Task 22 below must chain from `21.5` (`bash "$0" 21.5`) so `verify_task.sh 22` runs the new persister checks. **Do not** use `21|21.5)` — that would require Task 21.5 files to exist when verifying Task 21.
-
-- [ ] **Step 6: Verify and commit**
-
-```bash
-scripts/verify_task.sh 21.5
-git add MumblurCore/Sources/MumblurCore/Storage/RetentionAwarePersister.swift \
-        MumblurCore/Tests/MumblurCoreTests/Storage/RetentionAwarePersisterTests.swift \
-        MumblurCore/Sources/MumblurCore/Runner.swift App/AppCoordinator.swift \
-        scripts/verify_task.sh
-git commit -m "feat(storage): RetentionAwarePersister wires audio retention into dictation pipeline"
-```
-
 
 ---
 
@@ -2742,7 +2744,7 @@ Expected: 6 tests pass.
 
 ```bash
     22)
-        bash "$0" 21.5
+        bash "$0" 21
         need_file MumblurCore/Sources/MumblurCore/WERNormalizer.swift
         need_file MumblurCore/Sources/MumblurCore/Tuning/WERCalculator.swift
         need_file MumblurCore/Tests/MumblurCoreTests/WERTests.swift
