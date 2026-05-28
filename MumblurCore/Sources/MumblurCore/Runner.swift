@@ -43,11 +43,26 @@ public final class Runner: @unchecked Sendable {
 
     public var state: State { lock.withLock { $0.state } }
 
+    /// Toggles whether press events start recording. Used by the calibration ceremony
+    /// to keep dictation off while the user reads the script (suspend happens at idle).
+    public func setSuspended(_ on: Bool) {
+        lock.withLock { s in
+            s.suspended = on
+            s.suspendHistory.append(on)
+        }
+    }
+
+    /// Test-only: the ordered history of setSuspended(_:) calls.
+    internal var setSuspendedCallsForTesting: [Bool] {
+        lock.withLock { $0.suspendHistory }
+    }
+
     public func onPress() {
         let shouldStart: Bool = lock.withLock { s in
-            guard s.state == .idle else {
+            guard !s.suspended, s.state == .idle else {
                 let stateVal = s.state.rawValue
-                Logger.runner.info("press ignored (state=\(stateVal))")
+                let susp = s.suspended
+                Logger.runner.info("press ignored (suspended=\(susp), state=\(stateVal))")
                 return false
             }
             s.state = .recording
@@ -118,6 +133,8 @@ public final class Runner: @unchecked Sendable {
         var state: State = .idle
         var pressTime: Date = .distantPast
         var worker: Task<Void, Never>? = nil
+        var suspended: Bool = false
+        var suspendHistory: [Bool] = []
     }
 
     private let recorder: AudioRecording

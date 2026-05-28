@@ -193,6 +193,13 @@ case "$TASK" in
         need_file MumblurCore/Sources/MumblurCore/Tuning/SuggestionGenerator.swift
         core_test
         ;;
+    24)
+        bash "$0" 23
+        need_file MumblurCore/Sources/MumblurCore/Tuning/CalibrationController.swift
+        grep -q 'func setSuspended' MumblurCore/Sources/MumblurCore/Runner.swift \
+            || fail "Runner missing setSuspended(on:)"
+        core_test
+        ;;
     *)
         fail "unknown task: $TASK"
         ;;
