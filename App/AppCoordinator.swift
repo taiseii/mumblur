@@ -297,6 +297,46 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
+    /// Persist global LLM server config and hot-swap it into the live editor so
+    /// URL/model/timeout/enable changes take effect immediately.
+    func setLLMServerConfig(_ cfg: LLMServerConfig) async {
+        guard let settings = settingsStore else { return }
+        do {
+            try await settings.setLLMServerConfig(cfg)
+            await llmEditor?.configure(cfg)
+        } catch {
+            Logger.app.error("setLLMServerConfig failed: \(error.localizedDescription)")
+            lastError = error.localizedDescription
+        }
+    }
+
+    func currentLLMServerConfig() async -> LLMServerConfig {
+        guard let settings = settingsStore else { return .default }
+        return (try? await settings.llmServerConfig()) ?? .default
+    }
+
+    /// Persist a profile's LLM-edit settings. If it is the active profile, patch
+    /// the live serving snapshot in place (no model reload).
+    func updateProfileAISettings(profileID: String, enabled: Bool, prompt: String?) async {
+        guard let settings = settingsStore,
+              var profile = try? await settings.get(profileID: profileID) else { return }
+        profile.llmEditEnabled = enabled
+        profile.llmEditPrompt = prompt
+        do {
+            try await settings.update(profile)
+            settingsBridge.profiles = try await settings.listActive()
+            if settingsBridge.activeProfileID == profileID {
+                let trimmed = prompt?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let resolved = (trimmed?.isEmpty ?? true) ? LLMEditConfig.defaultPrompt : trimmed!
+                await transcriber?.updateLLMEdit(
+                    LLMEditConfig(enabled: enabled, prompt: resolved))
+            }
+        } catch {
+            Logger.app.error("updateProfileAISettings failed: \(error.localizedDescription)")
+            lastError = error.localizedDescription
+        }
+    }
+
     func quit() {
         runner?.shutdown(); hotkey?.stop()
         NSApplication.shared.terminate(nil)
