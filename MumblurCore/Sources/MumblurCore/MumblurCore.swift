@@ -1,5 +1,5 @@
 import Foundation
 
-public enum MumblurCore {
+public enum MumblurCoreInfo {
     public static let version = "0.1.0"
 }

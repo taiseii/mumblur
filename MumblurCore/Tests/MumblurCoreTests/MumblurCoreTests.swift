@@ -3,6 +3,6 @@ import XCTest
 
 final class MumblurCoreTests: XCTestCase {
     func testVersionIsNonEmpty() {
-        XCTAssertFalse(MumblurCore.version.isEmpty)
+        XCTAssertFalse(MumblurCoreInfo.version.isEmpty)
     }
 }

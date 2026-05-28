@@ -107,6 +107,14 @@ case "$TASK" in
         core_test
         app_build
         ;;
+    13)
+        bash "$0" 12
+        need_file MumblurCore/Sources/MumblurCore/Storage/Database.swift
+        need_file MumblurCore/Sources/MumblurCore/Storage/MigrationsV1.swift
+        need_file MumblurCore/Tests/MumblurCoreTests/Storage/DatabaseTests.swift
+        grep -q 'GRDB.swift' MumblurCore/Package.swift || fail "GRDB not in Package.swift"
+        core_test
+        ;;
     *)
         fail "unknown task: $TASK"
         ;;
