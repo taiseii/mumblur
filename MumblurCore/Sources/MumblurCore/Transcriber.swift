@@ -72,7 +72,7 @@ public final class RealWhisperKit: WhisperKitTranscribing, @unchecked Sendable {
     public static func make(modelHint: String? = nil) async throws -> RealWhisperKit {
         let resolved = try await resolveModelName(preferred: modelHint)
         Logger.transcribe.info("loading WhisperKit model: \(resolved, privacy: .public)")
-        let pipeline = try await WhisperKit(WhisperKitConfig(model: resolved))
+        let pipeline = try await WhisperKit(WhisperKitConfig(model: resolved, load: true))
         return RealWhisperKit(pipeline: pipeline)
     }
 
