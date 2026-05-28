@@ -81,8 +81,79 @@ public actor OpenAICompatibleEditor: TranscriptEditing {
         return URL(string: s + "/v1/chat/completions")
     }
 
+    private struct TimeoutError: Error {}
+
+    private struct ChatRequest: Encodable {
+        struct Message: Encodable { let role: String; let content: String }
+        let model: String
+        let messages: [Message]
+        let stream: Bool
+    }
+    private struct ChatResponse: Decodable {
+        struct Choice: Decodable { struct Msg: Decodable { let content: String }; let message: Msg }
+        let choices: [Choice]
+    }
+
     public func editFailOpen(_ text: String, instructions: String) async throws -> String {
-        // Implemented in Task D2.
-        return text
+        let cfg = config
+        guard cfg.enabled, let url = Self.endpoint(base: cfg.baseURL) else { return text }
+        let model = cfg.model
+        let session = self.session
+        do {
+            let edited = try await Self.race(timeoutMs: cfg.timeoutMs) {
+                try await Self.perform(session: session, url: url, model: model,
+                                       system: instructions, user: text)
+            }
+            let trimmed = edited.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? text : trimmed
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            Logger.transcribe.info("LLM edit failed open: \(error.localizedDescription, privacy: .public)")
+            return text
+        }
+    }
+
+    private static func perform(session: URLSession, url: URL, model: String,
+                                system: String, user: String) async throws -> String {
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body = ChatRequest(model: model,
+                               messages: [.init(role: "system", content: system),
+                                          .init(role: "user", content: user)],
+                               stream: false)
+        req.httpBody = try JSONEncoder().encode(body)
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+        let decoded = try JSONDecoder().decode(ChatResponse.self, from: data)
+        guard let content = decoded.choices.first?.message.content else {
+            throw URLError(.cannotParseResponse)
+        }
+        return content
+    }
+
+    /// First-result race between the operation and a sleep. The sleep winning
+    /// throws TimeoutError (→ fail-open). `defer { cancelAll() }` ensures the
+    /// loser is cancelled; `session.data(for:)` is cancellation-cooperative so
+    /// the wall-clock cap is hard. External cancellation propagates as
+    /// CancellationError.
+    private static func race(timeoutMs: Int,
+                             _ op: @escaping @Sendable () async throws -> String) async throws -> String {
+        try await withThrowingTaskGroup(of: String?.self) { group in
+            defer { group.cancelAll() }
+            group.addTask { try await op() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
+                return nil
+            }
+            while let result = try await group.next() {
+                if let value = result { return value }
+                throw TimeoutError()
+            }
+            throw TimeoutError()
+        }
     }
 }
