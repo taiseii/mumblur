@@ -58,7 +58,7 @@ future offline fine-tuner remains possible — but no fine-tuner ships here.
 | Data transparency | Stats + reveal-in-Finder + export (JSON/CSV) + delete-all; no browser |
 | Tuning scope | Config-level (prompt + rules + model). Calibration corpus kept for future trainer. |
 | SQLite library | GRDB.swift (single connection, actor-wrapped stores) |
-| Vocab → Whisper | Rendered into `initialPrompt`; replacement rules run post-transcription |
+| Vocab → Whisper | Rendered to text, tokenized with the loaded model's tokenizer, and passed as `DecodingOptions.promptTokens`; replacement rules run post-transcription (see §6.3, §9.1) |
 
 ## 5. Architecture
 
@@ -277,11 +277,11 @@ CREATE TABLE app_setting (
   and insert, an **orphan-cleanup sweep on launch** deletes `clips/*.wav` files not
   referenced by any `transcript.audio_rel_path`. This avoids both rows-without-audio and
   orphaned WAVs.
-- **Prompt tokens are model-coupled.** WhisperKit has no string `initialPrompt`; it
-  takes `DecodingOptions.promptTokens: [Int]`, and tokenization requires a loaded
-  model's `WhisperTokenizer`. So a profile's prompt is tokenized at model-swap-commit
-  time against the model being committed and frozen into the `ServingSnapshot`
-  (§6.3, §9.1) — never recomputed per dictation.
+- **Prompt tokens are model-coupled.** WhisperKit takes `DecodingOptions.promptTokens:
+  [Int]`, not a string, and tokenization requires a loaded model's `WhisperTokenizer`.
+  A profile's prompt is therefore tokenized at model-swap-commit time against the model
+  being committed and frozen into the `ServingSnapshot` (§6.3, §9.1) — never recomputed
+  per dictation.
 - **Hard-purge** of a profile and all its data is one transaction:
   ```sql
   BEGIN;
