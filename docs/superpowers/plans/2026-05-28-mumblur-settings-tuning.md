@@ -1586,32 +1586,50 @@ import XCTest
 @testable import MumblurCore
 import WhisperKit
 
-/// Slow integration spike. Confirms that:
-///   1. fetchAvailableModels / download / loadModels work,
-///   2. tokenizer.encode(text:) is reachable on a loaded model,
-///   3. DecodingOptions.promptTokens biases output (sanity: tokenizer roundtrip).
+/// Slow integration spike. Confirms three load-bearing claims against the real
+/// WhisperKit:
+///   1. fetchAvailableModels + download + loadModels work for the tiny model;
+///   2. WhisperKit.tokenizer is reachable and `encode(text:)` produces tokens;
+///   3. WhisperKit accepts `DecodingOptions(promptTokens:)` and a transcribe call
+///      with non-nil prompt tokens completes without throwing.
+///
+/// We intentionally do NOT assert text content — tiny models are not deterministic
+/// on biasing. This is a wiring smoke check, not a quality check.
 final class WhisperKitSpikeTests: XCTestCase {
 
-    private var slow: Bool {
-        ProcessInfo.processInfo.environment["MUMBLUR_RUN_SLOW"] == "1"
-    }
+    private var slow: Bool { ProcessInfo.processInfo.environment["MUMBLUR_RUN_SLOW"] == "1" }
 
-    func testPipelineLoadsAndExposesTokenizer() async throws {
+    func testPipelineLoadsAndAcceptsPromptTokens() async throws {
         try XCTSkipUnless(slow, "set MUMBLUR_RUN_SLOW=1 to run this spike")
         let kit = try await RealWhisperKit.make(modelHint: "openai_whisper-tiny")
-        let tokens = kit.encode(text: "Mumblur Questable")
-        XCTAssertFalse(tokens.isEmpty, "tokenizer.encode produced no tokens for non-empty text")
+
+        // (2) tokenizer reachable.
+        let tokens = try kit.encode(text: "Mumblur Questable")
+        XCTAssertFalse(tokens.isEmpty, "tokenizer.encode produced no tokens")
+
+        // (3) transcribe with promptTokens completes without throwing.
+        let chunk = 16_000 * 30
+        let silence = [Float](repeating: 0, count: chunk)
+        let options = DecodingOptions(language: "en",
+                                      detectLanguage: false,
+                                      promptTokens: tokens)
+        _ = try await kit.pipeline.transcribe(audioArray: silence, decodeOptions: options)
     }
 }
 ```
+
+> The spike accesses `kit.pipeline` — add `internal var pipeline: WhisperKit { _pipeline }` (or expose `_pipeline` directly) on `RealWhisperKit` if not already present. The Tests target uses `@testable import MumblurCore`, so internal access is fine.
 
 - [ ] **Step 6: Extend `RealWhisperKit` so the spike can call `encode(text:)`**
 
 In `MumblurCore/Sources/MumblurCore/Transcriber.swift`, add to `RealWhisperKit`:
 
 ```swift
-public func encode(text: String) -> [Int] {
-    pipeline.tokenizer?.encode(text: text) ?? []
+/// Throws to match the `Tokenizing` protocol the rest of the pipeline uses.
+/// Returns an empty array if the model is loaded but produced no tokens.
+public func encode(text: String) throws -> [Int] {
+    guard let t = pipeline.tokenizer else { return [] }
+    return t.encode(text: text)
 }
 ```
 
@@ -1684,8 +1702,23 @@ import XCTest
 
 private struct FakeKit: WhisperKitTranscribing {
     let output: String
-    func transcribe(audioArray: [Float], language: String?, detectLanguage: Bool)
-    async throws -> [any WhisperKitSegment] {
+    var observedPromptTokens: [Int]? = nil  // captured for assertions
+    func transcribe(audioArray: [Float], language: String?, detectLanguage: Bool,
+                    promptTokens: [Int]?) async throws -> [any WhisperKitSegment] {
+        struct S: WhisperKitSegment { let text: String }
+        return output.isEmpty ? [] : [S(text: output)]
+    }
+}
+
+/// Reference-typed spy variant so a test can read back the prompt tokens passed
+/// to the most recent `transcribe(...)` call.
+private final class SpyKit: WhisperKitTranscribing, @unchecked Sendable {
+    let output: String
+    private(set) var lastPromptTokens: [Int]?
+    init(output: String) { self.output = output }
+    func transcribe(audioArray: [Float], language: String?, detectLanguage: Bool,
+                    promptTokens: [Int]?) async throws -> [any WhisperKitSegment] {
+        lastPromptTokens = promptTokens
         struct S: WhisperKitSegment { let text: String }
         return output.isEmpty ? [] : [S(text: output)]
     }
@@ -1725,6 +1758,16 @@ final class TranscriberTests: XCTestCase {
             XCTFail("expected NotServingError")
         } catch {}
     }
+
+    func testTranscribe_threadsPromptTokensFromSnapshot() async throws {
+        let t = Transcriber()
+        let spy = SpyKit(output: "ok")
+        let payload = PromptPayload(sourceText: "Glossary: Questable",
+                                    promptTokens: [42, 7, 9], omittedTerms: [])
+        await t.commit(snapshot: snap(prompt: payload), kit: spy)
+        _ = try await t.transcribe([1, 2, 3])
+        XCTAssertEqual(spy.lastPromptTokens, [42, 7, 9])
+    }
 }
 ```
 
@@ -1747,8 +1790,10 @@ import os
 public protocol WhisperKitSegment: Sendable { var text: String { get } }
 
 public protocol WhisperKitTranscribing: Sendable {
-    func transcribe(audioArray: [Float], language: String?, detectLanguage: Bool)
-        async throws -> [any WhisperKitSegment]
+    func transcribe(audioArray: [Float],
+                    language: String?,
+                    detectLanguage: Bool,
+                    promptTokens: [Int]?) async throws -> [any WhisperKitSegment]
 }
 
 public struct TranscriptionOutput: Sendable {
@@ -1776,17 +1821,28 @@ public actor Transcriber {
             return TranscriptionOutput(rawText: "", snapshot: snap)
         }
         let detect = (snap.language == nil)
+        let prompt = snap.prompt.promptTokens.isEmpty ? nil : snap.prompt.promptTokens
         let segments = try await kit.transcribe(audioArray: samples,
                                                 language: snap.language,
-                                                detectLanguage: detect)
+                                                detectLanguage: detect,
+                                                promptTokens: prompt)
         let raw = segments.map(\.text).joined()
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return TranscriptionOutput(rawText: raw, snapshot: snap)
     }
 }
 
-// Existing RealWhisperKit / resolveModelName / padded transcribe stays unchanged,
-// plus the encode(text:) helper added in Task 17.
+// RealWhisperKit (updated):
+//   - transcribe(...) signature accepts promptTokens and builds
+//     DecodingOptions(language:detectLanguage:promptTokens:);
+//   - encode(text:) is throwing to match the Tokenizing protocol.
+extension RealWhisperKit {
+    /// Replaces the prior encode(text:) helper from Task 17 with a throwing version.
+    public func encode(text: String) throws -> [Int] {
+        guard let t = pipeline.tokenizer else { return [] }
+        return t.encode(text: text)
+    }
+}
 ```
 
 - [ ] **Step 4: Run tests — all pass**
@@ -1853,8 +1909,8 @@ private actor ControllableLoader: ModelLoading {
 
 private struct FixedKit: WhisperKitTranscribing {
     let text: String; let tag: String
-    func transcribe(audioArray: [Float], language: String?, detectLanguage: Bool)
-    async throws -> [any WhisperKitSegment] {
+    func transcribe(audioArray: [Float], language: String?, detectLanguage: Bool,
+                    promptTokens: [Int]?) async throws -> [any WhisperKitSegment] {
         struct S: WhisperKitSegment { let text: String }
         return [S(text: text)]
     }
@@ -2075,37 +2131,21 @@ cd MumblurCore && swift test --filter RunnerPostProcessTests
 
 Expected: compile errors.
 
-- [ ] **Step 3: Define a Runner-facing persistence protocol and wire post-processing**
+- [ ] **Step 3: Define the `DictationPersisting` seam and wire post-processing**
 
 ```swift
 // In MumblurCore/Sources/MumblurCore/Runner.swift — additions (keep existing state machine intact)
 
-public protocol TranscriptPersisting: Sendable {
-    func persist(snapshot: ServingSnapshot, startedAt: Date, durationMs: Int,
-                 rawText: String, finalText: String,
-                 audio: TranscriptStore.AudioMetadata?) async throws
-}
-
-extension TranscriptStore: TranscriptPersisting {
-    public func persist(snapshot: ServingSnapshot, startedAt: Date, durationMs: Int,
-                        rawText: String, finalText: String,
-                        audio: TranscriptStore.AudioMetadata?) async throws {
-        if let audio {
-            try insertWithAudio(profileID: snapshot.profileID,
-                profileNameSnapshot: snapshot.profileName,
-                promptSnapshot: snapshot.prompt.sourceText.isEmpty ? nil : snapshot.prompt.sourceText,
-                startedAt: startedAt, durationMs: durationMs,
-                modelID: snapshot.modelID, language: snapshot.language,
-                rawText: rawText, finalText: finalText, audio: audio)
-        } else {
-            try insertTextOnly(profileID: snapshot.profileID,
-                profileNameSnapshot: snapshot.profileName,
-                promptSnapshot: snapshot.prompt.sourceText.isEmpty ? nil : snapshot.prompt.sourceText,
-                startedAt: startedAt, durationMs: durationMs,
-                modelID: snapshot.modelID, language: snapshot.language,
-                rawText: rawText, finalText: finalText)
-        }
-    }
+/// Persistence seam consumed by the dictation pipeline. The concrete implementation
+/// is `RetentionAwarePersister` (Task 21.5); the protocol takes the samples buffer
+/// so the persister can write audio when retention is enabled.
+public protocol DictationPersisting: Sendable {
+    func persist(samples: [Float],
+                 snapshot: ServingSnapshot,
+                 startedAt: Date,
+                 durationMs: Int,
+                 rawText: String,
+                 finalText: String) async
 }
 ```
 
@@ -2113,19 +2153,18 @@ Then modify the `Runner` worker path: after `transcriber.transcribe(samples)` re
 
 ```swift
 let finalText = postProcessor.apply(output.rawText, rules: output.snapshot.rules)
-try? paster.paste(finalText)
-Task.detached { [persister, snapshot = output.snapshot] in
-    do {
-        try await persister.persist(snapshot: snapshot, startedAt: startedAt,
-            durationMs: durationMs, rawText: output.rawText, finalText: finalText,
-            audio: nil)
-    } catch {
-        Logger.app.error("persist failed: \(error.localizedDescription)")
-    }
-}
+await paster.paste(finalText)
+// Awaited on the worker (already off the UI). No detached task: Swift 6 capture
+// analysis is simpler and we don't need fire-and-forget here. Persist failures
+// are logged inside the persister and never propagate (paste already happened).
+await persister.persist(
+    samples: samples,
+    snapshot: output.snapshot,
+    startedAt: startedAt,
+    durationMs: durationMs,
+    rawText: output.rawText,
+    finalText: finalText)
 ```
-
-(Audio retention path comes in via `AppCoordinator` in Task 21 — pass `audio: nil` here; the Coordinator wires the real path with retention policy applied.)
 
 - [ ] **Step 4: Run tests — all pass**
 
@@ -2141,8 +2180,9 @@ Expected: all existing + new tests pass.
 ```bash
     20)
         bash "$0" 19
-        grep -q 'protocol TranscriptPersisting' MumblurCore/Sources/MumblurCore/Runner.swift
+        grep -q 'protocol DictationPersisting' MumblurCore/Sources/MumblurCore/Runner.swift
         grep -q 'postProcessor.apply' MumblurCore/Sources/MumblurCore/Runner.swift
+        grep -q 'await paster.paste' MumblurCore/Sources/MumblurCore/Runner.swift
         core_test
         ;;
 ```
@@ -2153,7 +2193,7 @@ Expected: all existing + new tests pass.
 scripts/verify_task.sh 20
 git add MumblurCore/Sources/MumblurCore/Runner.swift \
         MumblurCore/Tests/MumblurCoreTests/RunnerTests.swift scripts/verify_task.sh
-git commit -m "feat(runner): post-process via snapshot.rules; persist via TranscriptPersisting"
+git commit -m "feat(runner): post-process via snapshot.rules; persist via DictationPersisting"
 ```
 
 ---
@@ -2408,7 +2448,7 @@ private struct WhisperKitLoader: ModelLoading {
 
 private struct WhisperKitTokenizer: Tokenizing {
     let kit: RealWhisperKit
-    mutating func encode(text: String) -> [Int] { kit.encode(text: text) }
+    func encode(text: String) throws -> [Int] { try kit.encode(text: text) }
 }
 ```
 
@@ -2472,6 +2512,8 @@ final class RetentionAwarePersisterTests: XCTestCase {
 ```swift
 // MumblurCore/Sources/MumblurCore/Storage/RetentionAwarePersister.swift
 import Foundation
+import GRDB
+import os
 
 public actor RetentionAwarePersister: DictationPersisting {
     private let database: Database
@@ -2559,7 +2601,6 @@ git add MumblurCore/Sources/MumblurCore/Storage/RetentionAwarePersister.swift \
 git commit -m "feat(storage): RetentionAwarePersister wires audio retention into dictation pipeline"
 ```
 
-> The `import Foundation` in the persister implementation above is insufficient — also add `import GRDB` (for `Int.fetchOne`) and `import os` (for `Logger.app`).
 
 ---
 
@@ -3935,6 +3976,7 @@ import MumblurCore
 
 struct MenuBarContent: View {
     @ObservedObject var coordinator: AppCoordinator
+    @EnvironmentObject var bridge: AppCoordinator.SettingsBridge
 
     var body: some View {
         VStack(alignment: .leading) {
@@ -3961,7 +4003,7 @@ struct MenuBarContent: View {
             Divider()
 
             Menu("Profile: \(coordinator.activeProfileName)") {
-                ForEach(AppCoordinator.SettingsBridge.shared.profiles) { p in
+                ForEach(bridge.profiles) { p in
                     Button(p.name) {
                         Task { await coordinator.switchActiveProfile(p) }
                     }
