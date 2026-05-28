@@ -63,7 +63,12 @@ public actor OpenAICompatibleEditor: TranscriptEditing {
             self.session = session
         } else {
             let c = URLSessionConfiguration.ephemeral
-            c.timeoutIntervalForRequest = Double(config.timeoutMs) / 1000.0
+            // Fixed generous backstop only. The authoritative wall-clock cap is
+            // `race(timeoutMs:)`, which reads the CURRENT config.timeoutMs (clamped
+            // ≤ 60s). Keeping the session timeout well above that ensures the race —
+            // not a stale session value — owns the timeout, so configure(_:) changes
+            // to timeoutMs take effect immediately without rebuilding the session.
+            c.timeoutIntervalForRequest = 120
             self.session = URLSession(configuration: c)
         }
     }
