@@ -2,6 +2,15 @@
 import XCTest
 @testable import MumblurCore
 
+private struct PatchKit: WhisperKitTranscribing {
+    let text: String
+    func transcribe(audioArray: [Float], language: String?, detectLanguage: Bool,
+                    promptTokens: [Int]?) async throws -> [any WhisperKitSegment] {
+        struct S: WhisperKitSegment { let text: String }
+        return [S(text: text)]
+    }
+}
+
 private struct FakeKit: WhisperKitTranscribing {
     let output: String
     var observedPromptTokens: [Int]? = nil  // captured for assertions
@@ -59,6 +68,19 @@ final class TranscriberTests: XCTestCase {
             _ = try await t.transcribe([0])
             XCTFail("expected NotServingError")
         } catch {}
+    }
+
+    func testUpdateLLMEdit_patchesServingSnapshot() async throws {
+        let t = Transcriber()
+        await t.commit(
+            snapshot: ServingSnapshot(profileID: "p", profileName: "P", modelID: "m",
+                                      language: nil, prompt: .empty, rules: [],
+                                      llmEdit: .disabled),
+            kit: PatchKit(text: "hi"))
+        await t.updateLLMEdit(LLMEditConfig(enabled: true, prompt: "Polish"))
+        let out = try await t.transcribe([0.5])
+        XCTAssertTrue(out.snapshot.llmEdit.enabled)
+        XCTAssertEqual(out.snapshot.llmEdit.prompt, "Polish")
     }
 
     func testTranscribe_threadsPromptTokensFromSnapshot() async throws {

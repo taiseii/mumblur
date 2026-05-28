@@ -39,6 +39,13 @@ public actor Transcriber {
         self.kit = kit
     }
 
+    /// Patch only the LLM-edit config of the active snapshot, leaving the loaded
+    /// kit untouched. No-op if nothing is serving yet.
+    public func updateLLMEdit(_ cfg: LLMEditConfig) {
+        guard let snap = serving else { return }
+        self.serving = snap.with(llmEdit: cfg)
+    }
+
     public func transcribe(_ samples: [Float]) async throws -> TranscriptionOutput {
         guard let snap = serving, let kit else { throw TranscriberError.notServing }
         guard !samples.isEmpty else {
@@ -69,10 +76,26 @@ public final class RealWhisperKit: WhisperKitTranscribing, @unchecked Sendable {
         try await WhisperKit.fetchAvailableModels()
     }
 
-    public static func make(modelHint: String? = nil) async throws -> RealWhisperKit {
+    public static func make(modelHint: String? = nil, downloadBase: URL? = nil) async throws -> RealWhisperKit {
         let resolved = try await resolveModelName(preferred: modelHint)
         Logger.transcribe.info("loading WhisperKit model: \(resolved, privacy: .public)")
-        let pipeline = try await WhisperKit(WhisperKitConfig(model: resolved, load: true))
+        let config = WhisperKitConfig(model: resolved, downloadBase: downloadBase, load: true)
+        let pipeline = try await WhisperKit(config)
+        return RealWhisperKit(pipeline: pipeline)
+    }
+
+    /// Load a model from an on-disk CoreML model folder (custom/local models).
+    public static func make(modelFolder: URL) async throws -> RealWhisperKit {
+        Logger.transcribe.info("loading WhisperKit model folder: \(modelFolder.path, privacy: .public)")
+        let pipeline = try await WhisperKit(WhisperKitConfig(modelFolder: modelFolder.path, load: true))
+        return RealWhisperKit(pipeline: pipeline)
+    }
+
+    /// Download (if needed) and load `variant` from a custom Hugging Face `repo`.
+    public static func make(variant: String, repo: String, downloadBase: URL?) async throws -> RealWhisperKit {
+        Logger.transcribe.info("loading WhisperKit \(variant, privacy: .public) from repo \(repo, privacy: .public)")
+        let config = WhisperKitConfig(model: variant, downloadBase: downloadBase, modelRepo: repo, load: true)
+        let pipeline = try await WhisperKit(config)
         return RealWhisperKit(pipeline: pipeline)
     }
 
