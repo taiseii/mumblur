@@ -2,7 +2,7 @@
 import Foundation
 import GRDB
 
-public final class AppDatabase {
+public final class AppDatabase: @unchecked Sendable {
     public enum Location { case inMemory; case file(URL) }
 
     public let queue: DatabaseQueue
