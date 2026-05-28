@@ -219,6 +219,24 @@ case "$TASK" in
         ' App/MumblurApp.swift || fail "MumblurApp scene order must be Window -> MenuBarExtra -> Settings"
         app_build
         ;;
+    26)
+        bash "$0" 25
+        need_file App/Settings/ModelsSettingsView.swift
+        need_file App/Settings/TuningSettingsView.swift
+        need_file App/Settings/DataSettingsView.swift
+        need_file App/Settings/AboutSettingsView.swift
+        need_file App/Settings/ViewModels/ModelsViewModel.swift
+        need_file App/Settings/ViewModels/TuningViewModel.swift
+        need_file App/Settings/ViewModels/DataViewModel.swift
+        need_file App/Tests/Settings/ModelsViewModelTests.swift
+        need_file App/Tests/Settings/TuningViewModelTests.swift
+        need_file App/Tests/Settings/DataViewModelTests.swift
+        grep -q 'ModelsSettingsView' App/Settings/SettingsScene.swift
+        grep -q 'TuningSettingsView' App/Settings/SettingsScene.swift
+        grep -q 'DataSettingsView'   App/Settings/SettingsScene.swift
+        grep -q 'AboutSettingsView'  App/Settings/SettingsScene.swift
+        app_build
+        ;;
     *)
         fail "unknown task: $TASK"
         ;;

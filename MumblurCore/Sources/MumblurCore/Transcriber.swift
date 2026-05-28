@@ -64,6 +64,11 @@ public final class RealWhisperKit: WhisperKitTranscribing, @unchecked Sendable {
         self.pipeline = pipeline
     }
 
+    /// Public wrapper so the App target (which imports MumblurCore, not WhisperKit) can list models.
+    public static func fetchAvailableModels() async throws -> [String] {
+        try await WhisperKit.fetchAvailableModels()
+    }
+
     public static func make(modelHint: String? = nil) async throws -> RealWhisperKit {
         let resolved = try await resolveModelName(preferred: modelHint)
         Logger.transcribe.info("loading WhisperKit model: \(resolved, privacy: .public)")

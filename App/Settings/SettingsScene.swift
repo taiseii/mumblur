@@ -3,16 +3,17 @@ import SwiftUI
 
 struct SettingsScene: View {
     @EnvironmentObject var coordinator: AppCoordinator
-    @EnvironmentObject var bridge: AppCoordinator.SettingsBridge
 
     var body: some View {
         TabView {
-            GeneralSettingsView()
-                .tabItem { Label("General",  systemImage: "gearshape") }
-            ProfilesSettingsView()
-                .tabItem { Label("Profiles", systemImage: "person.crop.rectangle.stack") }
-            // Models / Tuning / Data / About come in Task 26.
+            GeneralSettingsView()  .tabItem { Label("General",  systemImage: "gearshape") }
+            ProfilesSettingsView() .tabItem { Label("Profiles", systemImage: "person.crop.rectangle.stack") }
+            ModelsSettingsView()   .tabItem { Label("Models",   systemImage: "shippingbox") }
+            TuningSettingsView()   .tabItem { Label("Tuning",   systemImage: "waveform.path.ecg") }
+            DataSettingsView()     .tabItem { Label("Data",     systemImage: "internaldrive") }
+            AboutSettingsView()    .tabItem { Label("About",    systemImage: "info.circle") }
         }
         .frame(width: 720, height: 460)
+        .environmentObject(coordinator)
     }
 }
