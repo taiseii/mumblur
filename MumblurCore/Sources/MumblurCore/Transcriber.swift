@@ -11,32 +11,53 @@ public protocol WhisperKitSegment: Sendable {
 public protocol WhisperKitTranscribing: Sendable {
     func transcribe(audioArray: [Float],
                     language: String?,
-                    detectLanguage: Bool) async throws -> [any WhisperKitSegment]
+                    detectLanguage: Bool,
+                    promptTokens: [Int]?) async throws -> [any WhisperKitSegment]
 }
 
+/// String-returning abstraction used by `Runner` and its tests. Kept until the
+/// Runner pipeline is rewired in a later task.
 public protocol Transcribing: Sendable {
     func transcribe(_ samples: [Float]) async throws -> String
 }
 
-public actor Transcriber: Transcribing {
-    private let kit: any WhisperKitTranscribing
-    private let language: String?
+public struct TranscriptionOutput: Sendable {
+    public let rawText: String
+    public let snapshot: ServingSnapshot
+    public init(rawText: String, snapshot: ServingSnapshot) {
+        self.rawText = rawText
+        self.snapshot = snapshot
+    }
+}
 
-    public init(kit: any WhisperKitTranscribing, language: String?) {
+public enum TranscriberError: Error { case notServing }
+
+public actor Transcriber {
+    private var serving: ServingSnapshot?
+    private var kit: (any WhisperKitTranscribing)?
+
+    public init() {}
+
+    /// Atomically replace the active serving snapshot + pipeline.
+    public func commit(snapshot: ServingSnapshot, kit: any WhisperKitTranscribing) {
+        self.serving = snapshot
         self.kit = kit
-        self.language = language
     }
 
-    public func transcribe(_ samples: [Float]) async throws -> String {
-        guard !samples.isEmpty else { return "" }
-        let detect = (language == nil)
-        let segments = try await kit.transcribe(
-            audioArray: samples,
-            language: language,
-            detectLanguage: detect
-        )
-        let joined = segments.map(\.text).joined()
-        return joined.trimmingCharacters(in: .whitespacesAndNewlines)
+    public func transcribe(_ samples: [Float]) async throws -> TranscriptionOutput {
+        guard let snap = serving, let kit else { throw TranscriberError.notServing }
+        guard !samples.isEmpty else {
+            return TranscriptionOutput(rawText: "", snapshot: snap)
+        }
+        let detect = (snap.language == nil)
+        let prompt = snap.prompt.promptTokens.isEmpty ? nil : snap.prompt.promptTokens
+        let segments = try await kit.transcribe(audioArray: samples,
+                                                language: snap.language,
+                                                detectLanguage: detect,
+                                                promptTokens: prompt)
+        let raw = segments.map(\.text).joined()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return TranscriptionOutput(rawText: raw, snapshot: snap)
     }
 }
 
@@ -92,9 +113,11 @@ public final class RealWhisperKit: WhisperKitTranscribing, @unchecked Sendable {
     /// Whisper operates on 30s chunks; WhisperKit does NOT auto-pad short audio,
     /// so we pad here. Also, `TranscriptionSegment.text` includes special tokens
     /// (e.g. `<|startoftranscript|>`) — we use the cleaned `result.text` instead.
+    /// `promptTokens` biases decoding; empty/nil means no biasing.
     public func transcribe(audioArray: [Float],
                            language: String?,
-                           detectLanguage: Bool) async throws -> [any WhisperKitSegment] {
+                           detectLanguage: Bool,
+                           promptTokens: [Int]?) async throws -> [any WhisperKitSegment] {
         let chunk = 16_000 * 30
         let padded: [Float]
         if audioArray.count < chunk {
@@ -104,7 +127,8 @@ public final class RealWhisperKit: WhisperKitTranscribing, @unchecked Sendable {
         }
         let options = DecodingOptions(
             language: language,
-            detectLanguage: detectLanguage
+            detectLanguage: detectLanguage,
+            promptTokens: (promptTokens?.isEmpty == true) ? nil : promptTokens
         )
         let results = try await pipeline.transcribe(audioArray: padded,
                                                     decodeOptions: options)

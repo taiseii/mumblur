@@ -34,7 +34,15 @@ final class AppCoordinator: ObservableObject {
         await perms.bootstrap()
         do {
             let kit = try await RealWhisperKit.make()
-            let transcriber = Transcriber(kit: kit, language: nil)
+            // Temporary bridge for Tasks 18-19 — replaced in Task 21 with real
+            // profile + ServingSnapshot wiring.
+            let core = Transcriber()
+            await core.commit(
+                snapshot: ServingSnapshot(profileID: "default", profileName: "Default",
+                                          modelID: "default", language: nil,
+                                          prompt: .empty, rules: []),
+                kit: kit)
+            let transcriber = TranscribingBridge(inner: core)
             let recorder = try AudioRecorder()
             let paster = Paster()
 
@@ -123,5 +131,16 @@ final class AppCoordinator: ObservableObject {
         case .stopping:     uiState = .transcribing
         case .transcribing: uiState = .transcribing
         }
+    }
+}
+
+/// Temporary bridge for Tasks 18-19 — removed in Task 21 when AppCoordinator
+/// gets real profile + ServingSnapshot wiring. Adapts the snapshot-based
+/// `Transcriber` to the legacy `Transcribing` (string-returning) interface `Runner` expects.
+private actor TranscribingBridge: Transcribing {
+    private let inner: Transcriber
+    init(inner: Transcriber) { self.inner = inner }
+    func transcribe(_ samples: [Float]) async throws -> String {
+        try await inner.transcribe(samples).rawText
     }
 }

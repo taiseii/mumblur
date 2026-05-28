@@ -146,6 +146,12 @@ case "$TASK" in
         need_file MumblurCore/Tests/MumblurCoreTests/WhisperKitSpikeTests.swift
         core_test
         ;;
+    18)
+        bash "$0" 17
+        grep -q 'actor Transcriber' MumblurCore/Sources/MumblurCore/Transcriber.swift
+        grep -q 'func commit(snapshot:' MumblurCore/Sources/MumblurCore/Transcriber.swift
+        core_test
+        ;;
     *)
         fail "unknown task: $TASK"
         ;;
