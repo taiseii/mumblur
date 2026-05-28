@@ -52,3 +52,37 @@ public struct NoOpEditor: TranscriptEditing {
     public init() {}
     public func editFailOpen(_ text: String, instructions: String) async throws -> String { text }
 }
+
+public actor OpenAICompatibleEditor: TranscriptEditing {
+    private var config: LLMServerConfig
+    private let session: URLSession
+
+    public init(config: LLMServerConfig, session: URLSession? = nil) {
+        self.config = config
+        if let session {
+            self.session = session
+        } else {
+            let c = URLSessionConfiguration.ephemeral
+            c.timeoutIntervalForRequest = Double(config.timeoutMs) / 1000.0
+            self.session = URLSession(configuration: c)
+        }
+    }
+
+    public func configure(_ config: LLMServerConfig) { self.config = config }
+
+    /// Normalize a user-entered base URL into the chat-completions endpoint.
+    /// Accepts `http://host:port`, a trailing `/`, or a trailing `/v1`.
+    static func endpoint(base: String) -> URL? {
+        var s = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return nil }
+        while s.hasSuffix("/") { s.removeLast() }
+        if s.hasSuffix("/v1") { s.removeLast(3) }
+        while s.hasSuffix("/") { s.removeLast() }
+        return URL(string: s + "/v1/chat/completions")
+    }
+
+    public func editFailOpen(_ text: String, instructions: String) async throws -> String {
+        // Implemented in Task D2.
+        return text
+    }
+}
