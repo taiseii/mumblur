@@ -33,6 +33,7 @@ public final class AppDatabase: @unchecked Sendable {
     public func runMigrations() throws {
         var migrator = DatabaseMigrator()
         migrator.registerV1()
+        migrator.registerV2()
         try migrator.migrate(queue)
     }
 }
