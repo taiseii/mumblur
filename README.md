@@ -1,76 +1,69 @@
-# mumblur
+# Mumblur
 
-Local push-to-talk dictation for macOS Apple Silicon, using a `whisper-large-v3-turbo` model running in-process via `pywhispercpp` with Metal acceleration.
-
-Hold **Right Option** while you speak; release to paste the transcript at the cursor in whatever app has focus.
+Local push-to-talk dictation for macOS. Hold Right Option, speak, release — your words are transcribed by [WhisperKit](https://github.com/argmaxinc/argmax-oss-swift) on-device and pasted at the cursor. No network, no cloud, no telemetry.
 
 ## Requirements
 
-- macOS on Apple Silicon (tested on M3 Max).
-- Python 3.12.
-- [`uv`](https://github.com/astral-sh/uv).
+- macOS 14 (Sonoma) or later
+- Apple Silicon recommended (M1+)
+- Xcode 16+ to build from source
+- ~1 GB free disk for the WhisperKit model on first launch
 
-## Install
-
-```bash
-uv sync --all-groups
-```
-
-Pre-fetch the Whisper model (~1 GB) into the repo:
+## Build & install
 
 ```bash
-scripts/download_model.sh
+brew install xcodegen
+xcodegen generate
+scripts/build_app.sh --install
+open /Applications/Mumblur.app
 ```
 
-This writes `models/ggml-large-v3-turbo-q5_0.bin`. If you skip this step, `pywhispercpp` will auto-download into its own cache on first launch.
+Mumblur lives in the menu bar (no Dock icon). On first launch macOS will request three permissions:
 
-To use the file you just downloaded explicitly, pass it as `--model`:
-```bash
-uv run mumbler --model "$PWD/models/ggml-large-v3-turbo-q5_0.bin"
-```
+1. **Microphone** — to capture audio
+2. **Accessibility** — to synthesize ⌘V at the cursor
+3. **Input Monitoring** — to detect the Right Option hotkey globally
 
-## macOS permissions
+The 2 s permission re-check timer picks up grants automatically — no restart needed.
 
-On first launch you'll see two prompts. Approve both:
+## Usage
 
-1. **Microphone** — for the terminal running `mumbler`.
-2. **Accessibility** — for the terminal running `mumbler`. Needed so the global hotkey can be captured and ⌘V can be synthesized.
+Hold **Right Option**, dictate, release. Within ~1 s the transcript appears at the cursor.
 
-If you denied either, grant it in **System Settings → Privacy & Security**.
+Menu bar icon states:
+- `mic` — idle, waiting
+- `mic.fill` — recording
+- `waveform` — transcribing
+- `hourglass` — loading model
+- `exclamationmark.triangle` — permission needed
+- `exclamationmark.octagon` — fatal error
 
-## Run
+## Layout
 
-```bash
-uv run mumbler
-```
-
-Expected:
-```
-[mumbler] loading model 'large-v3-turbo-q5_0'…
-[mumbler] model loaded; hold alt_r to dictate. Ctrl-C to quit.
-```
-
-Hold Right Option, speak, release. The transcript appears at the cursor.
-
-## Flags
-
-```
-mumbler [--hotkey KEY] [--model NAME_OR_PATH] [--language LANG] [--min-hold-ms MS]
-```
-
-- `--hotkey` — any `pynput.keyboard.Key` name. Default `alt_r`.
-- `--model` — pywhispercpp model name or absolute path. Default `large-v3-turbo-q5_0`.
-- `--language` — Whisper language code, or `auto`. Default `auto`.
-- `--min-hold-ms` — presses shorter than this are discarded. Default `200`.
+- `App/` — SwiftUI menu-bar app target
+- `MumblurCore/` — testable Swift package (audio, hotkey, transcribe, paste, runner)
+- `scripts/verify_task.sh` — per-task build/test harness
+- `scripts/build_app.sh` — release build + ad-hoc sign + optional install
+- `docs/superpowers/` — design spec and implementation plan
 
 ## Tests
 
 ```bash
-uv run pytest                # fast tests
-uv run pytest -m slow        # integration test that loads the real model
-scripts/verify_task.sh 6     # per-task verification harness (1..8)
+cd MumblurCore && swift test
 ```
 
-## Design
+29 unit tests, ~0.07 s. The slow WhisperKit integration test is gated:
 
-See [`docs/superpowers/specs/2026-05-27-push-to-talk-dictation-design.md`](docs/superpowers/specs/2026-05-27-push-to-talk-dictation-design.md).
+```bash
+cd MumblurCore && MUMBLUR_RUN_SLOW=1 swift test --filter TranscriberTests/testIntegration_transcribesHelloWorldFixture
+```
+
+Expect ~7 s with the model cached, ~3 min on first run while it downloads.
+
+## Logs
+
+While testing, stream the app's logs in a separate terminal:
+
+```bash
+log stream --predicate 'subsystem == "world.questable.mumblur"' --info --debug
+```
