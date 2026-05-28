@@ -246,6 +246,11 @@ case "$TASK" in
         grep -q 'Profile: ' App/MenuBarContent.swift     || fail "missing profile switcher"
         app_build
         ;;
+    28)
+        bash "$0" 27
+        core_test
+        app_build
+        ;;
     *)
         fail "unknown task: $TASK"
         ;;
