@@ -56,7 +56,10 @@ config (`enabled`, base URL, model, timeout) and an injected `URLSession`:
 
 ```swift
 public actor OpenAICompatibleEditor: TranscriptEditing {
-    public init(config: LLMServerConfig, session: URLSession = .ephemeralForLLM)
+    // `session` defaults to nil → the init builds an ephemeral URLSession
+    // internally. Tests pass a URLProtocol-backed session explicitly. (No
+    // public static-helper default arg — keeps the default self-contained.)
+    public init(config: LLMServerConfig, session: URLSession? = nil)
     public func configure(_ config: LLMServerConfig) // hot-swap global config
     public func editFailOpen(_ text: String, instructions: String) async throws -> String
 }
@@ -64,8 +67,8 @@ public actor OpenAICompatibleEditor: TranscriptEditing {
 
 It POSTs to `<baseURL>/v1/chat/completions` with a two-message body (`system` =
 per-profile `instructions`, `user` = raw transcript) and returns the assistant
-content. The `session` is injected so tests can drive it with a `URLProtocol`
-stub instead of `URLSession.shared`.
+content. The `session` is injectable so tests can drive it with a `URLProtocol`
+stub instead of the internal ephemeral session.
 
 **Two gates, one contract.** The per-profile gate lives in the snapshot; the
 global master switch + reachability live in the editor:
@@ -142,18 +145,33 @@ default," never "send no instructions."
 
 ### Serving refresh on active-profile edits
 
-`ServingSnapshot` only reaches the `Transcriber` via `ModelManager.requestSwap`
-(AppCoordinator.swift:213/254). There is **no** auto-refresh today — editing the
-active profile's rules/prompt already only takes effect on the next swap. The
-per-profile AI fields inherit that same behavior, made explicit:
+`ServingSnapshot` normally only reaches the `Transcriber` via
+`ModelManager.requestSwap` (AppCoordinator.swift:213/254), which **always reloads
+the Whisper model** (`loader.load`, ModelManager.swift:35). The LLM edit config
+does not affect the loaded model or the prompt payload at all — it is consumed
+only by `Runner`. Re-issuing `requestSwap` just to change a text prompt would
+trigger a needless multi-second model reload and the `.swappingModel` UI.
+
+Instead, the `Transcriber` actor gets a lightweight atomic patch method that
+mutates only the `llmEdit` field of its stored snapshot, leaving the loaded kit
+untouched:
+
+```swift
+// on the Transcriber actor
+public func updateLLMEdit(_ cfg: LLMEditConfig)  // serving.llmEdit = cfg
+```
+
+Behavior:
 
 - Editing a **non-active** profile's AI settings just persists; it applies the
-  next time that profile is selected.
-- Editing the **active** profile's AI settings must trigger a serving refresh.
-  `AppCoordinator` re-issues `requestSwap(to: updatedProfile)` using the existing
-  tentative-then-commit pattern (mirroring `setActiveProfileModel`,
-  AppCoordinator.swift:239) so the frozen snapshot is rebuilt with the new
-  `llmEdit`.
+  next time that profile is selected (via the normal `requestSwap`).
+- Editing the **active** profile's AI settings persists **and** calls
+  `await transcriber.updateLLMEdit(cfg)`. No model reload, no `.swappingModel`
+  UI, and no rollback ceremony — it is a pure in-memory mutation that cannot
+  fail, so stored settings and the serving snapshot stay consistent.
+
+This does **not** put the editor inside `Transcriber` (only a config field is
+patched); calibration still ignores `llmEdit` and is unaffected.
 
 ## Data Model
 
@@ -218,7 +236,8 @@ New **"AI Editing"** tab — `App/Settings/AISettingsView.swift` +
 `App/Settings/ViewModels/AIViewModel.swift`, following the existing tab pattern.
 
 - **Global section:** master enable, base URL, model, timeout, and a
-  **"Test connection"** button that pings the endpoint and reports reachability.
+  **"Test connection"** button that issues a real minimal chat completion and
+  reports the result (see Scope).
 - **Per-profile section:** enable toggle + a multiline editing-prompt field.
   Default prompt:
   > "Fix punctuation, capitalization, and remove filler words. Do not change
@@ -242,16 +261,26 @@ editor must be reconfigured imperatively. `AIViewModel` writes through
   so URL/model/timeout/enable edits take effect immediately (no profile reload).
 - **Per-profile change:** `AppCoordinator.updateProfileAISettings(...)` persists
   via `settings.update(profile)`; if the edited profile is the active one, it
-  re-issues `requestSwap` (see "Serving refresh" above).
+  also calls `await transcriber.updateLLMEdit(cfg)` — the lightweight snapshot
+  patch (see "Serving refresh" above), not a `requestSwap`.
 
 ## Failure & Latency Behavior
 
 - **Hard wall-clock timeout.** `URLSession`'s `timeoutIntervalForRequest` guards
   per-resource stalls, not total elapsed time, so it is not sufficient alone.
   `editFailOpen` races the request against `Task.sleep(timeoutMs)` (a
-  `withThrowingTaskGroup` first-result race); whichever finishes first wins and
-  the loser is cancelled. The session also sets `timeoutIntervalForRequest =
-  timeoutMs` as a backstop.
+  `withThrowingTaskGroup` first-result race); whichever finishes first wins.
+  Implementation requirements so the cap is actually hard:
+  - `defer { group.cancelAll() }` inside the group, and return on the first
+    completed child — structured groups otherwise await all children at scope
+    exit, which would defeat the timeout.
+  - Snapshot `config`/`session` into locals **before** `addTask` (don't capture
+    actor-isolated state inside the child closures).
+  - Use the cancellation-cooperative `session.data(for:)`; the network child
+    must observe cancellation when the sleep child wins. Tests drive this with a
+    `URLProtocol` stub that honors cancellation, or assert the timeout via the
+    sleep branch winning.
+  The session also sets `timeoutIntervalForRequest = timeoutMs` as a backstop.
 - **Fail-open triggers:** timeout, connection refused, non-2xx status, malformed
   JSON, empty completion → return the pre-LLM text; log at `.info`.
 - **Cancellation is not fail-open.** `CancellationError` (worker shutdown)
@@ -265,8 +294,11 @@ editor must be reconfigured imperatively. `AIViewModel` writes through
 **Runner-level** (`FakeEditor` conforming to `TranscriptEditing` in `RunnerTests`):
 
 - per-profile `enabled` + success → edited text reaches paste
-- per-profile `enabled` + thrown network/timeout error → falls back to pre-LLM
-  text (fail-open), paste still happens
+- per-profile `enabled` + `FakeEditor` returns the input unchanged (modeling a
+  swallowed network/timeout failure) → pre-LLM text flows to paste. Note: the
+  fail-open *swallowing* itself is verified at the editor level, not here —
+  `editFailOpen` only ever throws `CancellationError` to `Runner`, so the Runner
+  fake must not throw network errors.
 - per-profile `enabled` + `FakeEditor` throws `CancellationError` → **no** paste/
   persist (cancellation is not fail-open)
 - `snapshot.llmEdit.enabled == false` → editor's `editFailOpen` never called
