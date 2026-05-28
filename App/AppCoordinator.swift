@@ -106,6 +106,7 @@ final class AppCoordinator: ObservableObject {
     private var audioStore: AudioStore?
     private var persister: RetentionAwarePersister?
     private var customModelStore: CustomModelStore?
+    private var llmEditor: OpenAICompatibleEditor?
 
     /// On-disk root for the SQLite DB and audio clips, once bootstrap has run.
     private(set) var storageRoot: URL?
@@ -162,11 +163,14 @@ final class AppCoordinator: ObservableObject {
             self.servingModelID = snap.modelID
             self.modelLoadingID = nil
 
+            let llmConfig = try await settings.llmServerConfig()
+            let editor = OpenAICompatibleEditor(config: llmConfig)
+
             let recorder = try AudioRecorder()
             let paster = Paster()
             let runner = Runner(
                 recorder: recorder, transcriber: transcriber,
-                paster: paster, persister: persister, minHoldMs: 200,
+                paster: paster, persister: persister, editor: editor, minHoldMs: 200,
                 onStateChange: { [weak self] s in
                     Task { @MainActor in self?.applyRunnerState(s) }
                 })
@@ -176,6 +180,7 @@ final class AppCoordinator: ObservableObject {
             self.persister = persister; self.customModelStore = customModels
             self.recorder = recorder; self.transcriber = transcriber
             self.manager = manager; self.runner = runner
+            self.llmEditor = editor
             self.activeProfileName = active.name
 
             settingsBridge.profiles = try await settings.listActive()
