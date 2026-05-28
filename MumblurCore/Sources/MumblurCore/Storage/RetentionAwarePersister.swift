@@ -17,12 +17,8 @@ public actor RetentionAwarePersister: DictationPersisting {
                         rawText: String, finalText: String) async {
         let enabled = (try? readRetentionEnabled()) ?? false
         if !enabled {
-            try? await transcripts.insertTextOnly(
-                profileID: snapshot.profileID, profileNameSnapshot: snapshot.profileName,
-                promptSnapshot: snapshot.prompt.sourceText.isEmpty ? nil : snapshot.prompt.sourceText,
-                startedAt: startedAt, durationMs: durationMs,
-                modelID: snapshot.modelID, language: snapshot.language,
-                rawText: rawText, finalText: finalText)
+            await insertTextOnlyFallback(snapshot: snapshot, startedAt: startedAt,
+                                         durationMs: durationMs, rawText: rawText, finalText: finalText)
             return
         }
         do {
@@ -41,9 +37,27 @@ public actor RetentionAwarePersister: DictationPersisting {
                 // Compensating delete — keep the FS consistent with the DB.
                 try? FileManager.default.removeItem(at: written.absoluteURL)
                 Logger.app.error("transcript insert failed; removed WAV: \(error.localizedDescription)")
+                await insertTextOnlyFallback(snapshot: snapshot, startedAt: startedAt,
+                                             durationMs: durationMs, rawText: rawText, finalText: finalText)
             }
         } catch {
-            Logger.app.error("audio write failed: \(error.localizedDescription)")
+            Logger.app.error("audio write failed; falling back to text-only: \(error.localizedDescription)")
+            await insertTextOnlyFallback(snapshot: snapshot, startedAt: startedAt,
+                                         durationMs: durationMs, rawText: rawText, finalText: finalText)
+        }
+    }
+
+    private func insertTextOnlyFallback(snapshot: ServingSnapshot, startedAt: Date,
+                                        durationMs: Int, rawText: String, finalText: String) async {
+        do {
+            try await transcripts.insertTextOnly(
+                profileID: snapshot.profileID, profileNameSnapshot: snapshot.profileName,
+                promptSnapshot: snapshot.prompt.sourceText.isEmpty ? nil : snapshot.prompt.sourceText,
+                startedAt: startedAt, durationMs: durationMs,
+                modelID: snapshot.modelID, language: snapshot.language,
+                rawText: rawText, finalText: finalText)
+        } catch {
+            Logger.app.error("text-only fallback insert failed: \(error.localizedDescription)")
         }
     }
 

@@ -78,11 +78,34 @@ final class RetentionAwarePersisterTests: XCTestCase {
         let persister = RetentionAwarePersister(database: db, transcripts: transcripts, audio: audio)
 
         // snapshot references a profile that does NOT exist → FK violation on insertWithAudio
+        // AND on the text-only fallback → still count 0
         await persister.persist(samples: [0.5, 0.6], snapshot: snapshot(profileID: "ghost"),
                                 startedAt: Date(), durationMs: 1, rawText: "r", finalText: "f")
 
         let stats = try await transcripts.stats()
         XCTAssertEqual(stats.count, 0)          // insert failed
         XCTAssertEqual(wavCount(in: root), 0)   // freshly-written WAV was compensating-deleted
+    }
+
+    func testRetentionOn_audioWriteFailure_fallsBackToTextOnlyRow() async throws {
+        // root is a regular file → AudioStore can't create clips/ → write() throws.
+        let rootFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notadir-\(UUID().uuidString).bin")
+        try Data([0x00]).write(to: rootFile)
+        defer { try? FileManager.default.removeItem(at: rootFile) }
+        let db = try AppDatabase(location: .inMemory)
+        let settings = SettingsStore(database: db)
+        let transcripts = TranscriptStore(database: db)
+        let audio = AudioStore(root: rootFile)
+        let p = try await settings.create(name: "P", modelID: "m")
+        try enableRetention(db)
+        let persister = RetentionAwarePersister(database: db, transcripts: transcripts, audio: audio)
+
+        await persister.persist(samples: [0.5], snapshot: snapshot(profileID: p.id),
+                                startedAt: Date(), durationMs: 1, rawText: "r", finalText: "f")
+
+        let stats = try await transcripts.stats()
+        XCTAssertEqual(stats.count, 1)       // fell back to a text-only row
+        XCTAssertEqual(stats.audioCount, 0)  // no audio persisted
     }
 }
