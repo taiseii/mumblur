@@ -167,6 +167,12 @@ case "$TASK" in
         grep -q 'await paster.paste' MumblurCore/Sources/MumblurCore/Runner.swift
         core_test
         ;;
+    21.5)
+        bash "$0" 20
+        need_file MumblurCore/Sources/MumblurCore/Storage/RetentionAwarePersister.swift
+        need_file MumblurCore/Tests/MumblurCoreTests/Storage/RetentionAwarePersisterTests.swift
+        core_test
+        ;;
     *)
         fail "unknown task: $TASK"
         ;;
