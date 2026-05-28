@@ -42,12 +42,33 @@ struct ProfilesSettingsView: View {
 }
 
 struct ProfileEditor: View {
+    @EnvironmentObject var coordinator: AppCoordinator
     let profile: Profile
+
+    private static let languages: [(name: String, code: String?)] = [
+        ("Auto-detect", nil), ("English", "en"), ("Spanish", "es"), ("French", "fr"),
+        ("German", "de"), ("Italian", "it"), ("Portuguese", "pt"), ("Dutch", "nl"),
+        ("Japanese", "ja"), ("Chinese", "zh"), ("Korean", "ko"),
+    ]
+
     var body: some View {
         Form {
             TextField("Name", text: .constant(profile.name))
-            TextField("Language (BCP-47, blank = auto)", text: .constant(profile.language ?? ""))
-            TextField("Model", text: .constant(profile.modelID))
+            Picker("Language", selection: Binding(
+                get: { profile.language },
+                set: { newValue in
+                    Task { await coordinator.setProfileLanguage(profileID: profile.id, language: newValue) }
+                })) {
+                ForEach(Self.languages, id: \.code) { lang in
+                    Text(lang.name).tag(lang.code)
+                }
+            }
+            LabeledContent("Model") {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(profile.modelID)
+                    Text("Change in the Models tab").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
             TextEditor(text: .constant(profile.initialPrompt ?? ""))
                 .frame(height: 80)
             Section("Vocabulary") {

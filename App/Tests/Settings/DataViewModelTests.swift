@@ -28,4 +28,25 @@ final class DataViewModelTests: XCTestCase {
         }
         XCTAssertEqual(enabled, 1)
     }
+
+    func testLoad_populatesRecentAndStorageRoot() async throws {
+        let db = try AppDatabase(location: .inMemory)
+        let settings = SettingsStore(database: db)
+        let store = TranscriptStore(database: db)
+        let p = try await settings.create(name: "P", modelID: "m")
+        try await store.insertTextOnly(profileID: p.id, profileNameSnapshot: p.name,
+            promptSnapshot: nil, startedAt: Date(), durationMs: 1,
+            modelID: "m", language: nil, rawText: "raw", finalText: "final")
+        let root = URL(fileURLWithPath: "/tmp/mumblur-test")
+        let vm = DataViewModel(deps: .init(
+            loadStats: { nil },
+            loadRetention: { (false, "days", 30) },
+            setRetention: { _, _, _ in },
+            loadRecent: { (try? await store.recent(limit: 50)) ?? [] },
+            storageRoot: root))
+        await vm.load()
+        XCTAssertEqual(vm.recent.count, 1)
+        XCTAssertEqual(vm.recent.first?.finalText, "final")
+        XCTAssertEqual(vm.storageRoot, root)
+    }
 }

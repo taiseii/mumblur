@@ -25,6 +25,20 @@ public actor TranscriptStore {
         public let newestAt: Date?
     }
 
+    public struct Row: Sendable, Identifiable {
+        public let id: Int64
+        public let startedAt: Date
+        public let durationMs: Int
+        public let profileNameSnapshot: String?
+        public let modelID: String
+        public let language: String?
+        public let promptSnapshot: String?
+        public let rawText: String
+        public let finalText: String
+        public let audioRelPath: String?
+        public let audioBytes: Int64?
+    }
+
     public enum RetentionPolicy: Sendable {
         case days(Int)
         case count(limit: Int)
@@ -78,6 +92,30 @@ public actor TranscriptStore {
             func date(_ ms: Int64?) -> Date? { ms.map { Date(timeIntervalSince1970: Double($0) / 1000.0) } }
             return Stats(count: count, audioCount: audioCount, bytes: bytes,
                          oldestAt: date(oldest), newestAt: date(newest))
+        }
+    }
+
+    /// Most-recent dictations first, capped at `limit`.
+    public func recent(limit: Int) throws -> [Row] {
+        try database.read { db in
+            try GRDB.Row.fetchAll(db, sql: """
+                SELECT id, started_at, duration_ms, profile_name_snapshot, model_id,
+                       language, prompt_snapshot, raw_text, final_text,
+                       audio_rel_path, audio_bytes
+                FROM transcript ORDER BY started_at DESC, id DESC LIMIT ?
+            """, arguments: [limit]).map { r in
+                Row(id: r["id"],
+                    startedAt: Date(timeIntervalSince1970: Double(r["started_at"] as Int64) / 1000.0),
+                    durationMs: r["duration_ms"],
+                    profileNameSnapshot: r["profile_name_snapshot"],
+                    modelID: r["model_id"],
+                    language: r["language"],
+                    promptSnapshot: r["prompt_snapshot"],
+                    rawText: r["raw_text"],
+                    finalText: r["final_text"],
+                    audioRelPath: r["audio_rel_path"],
+                    audioBytes: r["audio_bytes"])
+            }
         }
     }
 

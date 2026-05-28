@@ -28,4 +28,11 @@ public struct ServingSnapshot: Equatable, Sendable {
         ServingSnapshot(profileID: profileID, profileName: profileName, modelID: modelID,
                         language: language, prompt: prompt, rules: rules, llmEdit: llmEdit)
     }
+
+    /// Copy with a replaced `language` — used by `Transcriber.updateLanguage` to
+    /// switch decoding language (e.g. force English) without a model reload.
+    public func with(language: String?) -> ServingSnapshot {
+        ServingSnapshot(profileID: profileID, profileName: profileName, modelID: modelID,
+                        language: language, prompt: prompt, rules: rules, llmEdit: llmEdit)
+    }
 }

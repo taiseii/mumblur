@@ -46,6 +46,16 @@ public actor Transcriber {
         self.serving = snap.with(llmEdit: cfg)
     }
 
+    /// Patch only the decoding language of the active snapshot (e.g. force
+    /// English), leaving the loaded kit untouched. No-op if nothing is serving.
+    public func updateLanguage(_ language: String?) {
+        guard let snap = serving else { return }
+        self.serving = snap.with(language: language)
+    }
+
+    /// The language the active snapshot will decode with, or nil if not serving.
+    public func servingLanguage() -> String? { serving?.language }
+
     public func transcribe(_ samples: [Float]) async throws -> TranscriptionOutput {
         guard let snap = serving, let kit else { throw TranscriberError.notServing }
         guard !samples.isEmpty else {

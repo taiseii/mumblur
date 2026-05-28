@@ -83,6 +83,26 @@ final class TranscriberTests: XCTestCase {
         XCTAssertEqual(out.snapshot.llmEdit.prompt, "Polish")
     }
 
+    func testUpdateLanguage_patchesServingSnapshot() async throws {
+        let t = Transcriber()
+        await t.commit(
+            snapshot: ServingSnapshot(profileID: "p", profileName: "P", modelID: "m",
+                                      language: nil, prompt: .empty, rules: []),
+            kit: PatchKit(text: "hi"))
+        await t.updateLanguage("en")
+        let lang = await t.servingLanguage()
+        XCTAssertEqual(lang, "en")
+        let out = try await t.transcribe([0.5])
+        XCTAssertEqual(out.snapshot.language, "en")
+    }
+
+    func testUpdateLanguage_beforeCommit_isNoOp() async {
+        let t = Transcriber()
+        await t.updateLanguage("en")
+        let lang = await t.servingLanguage()
+        XCTAssertNil(lang)
+    }
+
     func testTranscribe_threadsPromptTokensFromSnapshot() async throws {
         let t = Transcriber()
         let spy = SpyKit(output: "ok")
