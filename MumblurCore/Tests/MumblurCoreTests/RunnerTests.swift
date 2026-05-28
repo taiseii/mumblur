@@ -121,6 +121,42 @@ final class SlowStopRecorder: AudioRecording, @unchecked Sendable {
     func unblockStop() { stopGate.signal() }
 }
 
+/// Returns a fixed edited string (models a successful LLM edit).
+private struct StubEditor: TranscriptEditing {
+    let edited: String
+    func editFailOpen(_ text: String, instructions: String) async throws -> String { edited }
+}
+/// Returns input unchanged (models a swallowed network/timeout failure — fail-open).
+private struct PassthroughEditor: TranscriptEditing {
+    func editFailOpen(_ text: String, instructions: String) async throws -> String { text }
+}
+/// Throws CancellationError (models worker cancellation mid-edit).
+private struct CancellingEditor: TranscriptEditing {
+    func editFailOpen(_ text: String, instructions: String) async throws -> String {
+        throw CancellationError()
+    }
+}
+/// Records whether it was ever invoked.
+private actor RecordingEditor: TranscriptEditing {
+    private(set) var calls = 0
+    func editFailOpen(_ text: String, instructions: String) async throws -> String {
+        calls += 1; return text
+    }
+    func callCount() -> Int { calls }
+}
+
+private func makeTranscriberWithEdit(_ kit: any WhisperKitTranscribing,
+                                     enabled: Bool, prompt: String = "p",
+                                     rules: [ReplacementRule] = []) async -> Transcriber {
+    let t = Transcriber()
+    await t.commit(
+        snapshot: ServingSnapshot(profileID: "t", profileName: "T", modelID: "m",
+                                  language: nil, prompt: .empty, rules: rules,
+                                  llmEdit: LLMEditConfig(enabled: enabled, prompt: prompt)),
+        kit: kit)
+    return t
+}
+
 // MARK: - Post-process + persist tests (new)
 
 final class RunnerPostProcessTests: XCTestCase {
@@ -353,5 +389,80 @@ final class RunnerTests: XCTestCase {
         runner.shutdown()
         XCTAssertEqual(runner.state, .idle)
         XCTAssertGreaterThanOrEqual(rec.abortCount, 1)
+    }
+}
+
+// MARK: - LLM-edit tests
+
+final class RunnerLLMEditTests: XCTestCase {
+    private func rule(_ p: String, _ r: String) -> ReplacementRule {
+        ReplacementRule(id: 0, profileID: "t", pattern: p, replacement: r,
+                        isRegex: false, caseSensitive: false, wordBoundary: true, sortOrder: 0)
+    }
+
+    func testEnabled_editedTextReachesPaste() async throws {
+        let rec = FakeAudioRecorder()
+        let tr = await makeTranscriberWithEdit(FixedKit(text: "raw words"), enabled: true)
+        let paster = SpyPaster()
+        let runner = Runner(recorder: rec, transcriber: tr, paster: paster,
+                            persister: NoOpPersister(), editor: StubEditor(edited: "edited words"),
+                            minHoldMs: 0)
+        runner.onPress(); rec.push([0.5]); runner.onRelease()
+        await waitUntilIdle(runner)
+        let pasted = await paster.getCalls()
+        XCTAssertEqual(pasted, ["edited words"])
+    }
+
+    func testEnabled_failOpenPassthrough_stillPastes() async throws {
+        let rec = FakeAudioRecorder()
+        let tr = await makeTranscriberWithEdit(FixedKit(text: "hello"), enabled: true)
+        let paster = SpyPaster()
+        let runner = Runner(recorder: rec, transcriber: tr, paster: paster,
+                            persister: NoOpPersister(), editor: PassthroughEditor(), minHoldMs: 0)
+        runner.onPress(); rec.push([0.5]); runner.onRelease()
+        await waitUntilIdle(runner)
+        let pasted = await paster.getCalls()
+        XCTAssertEqual(pasted, ["hello"])
+    }
+
+    func testEnabled_cancellation_doesNotPaste() async throws {
+        let rec = FakeAudioRecorder()
+        let tr = await makeTranscriberWithEdit(FixedKit(text: "hello"), enabled: true)
+        let paster = SpyPaster()
+        let runner = Runner(recorder: rec, transcriber: tr, paster: paster,
+                            persister: NoOpPersister(), editor: CancellingEditor(), minHoldMs: 0)
+        runner.onPress(); rec.push([0.5]); runner.onRelease()
+        await waitUntilIdle(runner)
+        let pasted = await paster.getCalls()
+        XCTAssertEqual(pasted, [])
+    }
+
+    func testDisabled_editorNeverCalled() async throws {
+        let rec = FakeAudioRecorder()
+        let tr = await makeTranscriberWithEdit(FixedKit(text: "hello"), enabled: false)
+        let paster = SpyPaster()
+        let editor = RecordingEditor()
+        let runner = Runner(recorder: rec, transcriber: tr, paster: paster,
+                            persister: NoOpPersister(), editor: editor, minHoldMs: 0)
+        runner.onPress(); rec.push([0.5]); runner.onRelease()
+        await waitUntilIdle(runner)
+        let count = await editor.callCount()
+        XCTAssertEqual(count, 0)
+        let pasted = await paster.getCalls()
+        XCTAssertEqual(pasted, ["hello"])
+    }
+
+    func testRulesRunAfterLLM_ruleWins() async throws {
+        let rec = FakeAudioRecorder()
+        let tr = await makeTranscriberWithEdit(FixedKit(text: "x"), enabled: true,
+                                               rules: [rule("Quest", "Questable")])
+        let paster = SpyPaster()
+        let runner = Runner(recorder: rec, transcriber: tr, paster: paster,
+                            persister: NoOpPersister(), editor: StubEditor(edited: "Quest rocks"),
+                            minHoldMs: 0)
+        runner.onPress(); rec.push([0.5]); runner.onRelease()
+        await waitUntilIdle(runner)
+        let pasted = await paster.getCalls()
+        XCTAssertEqual(pasted, ["Questable rocks"])
     }
 }
