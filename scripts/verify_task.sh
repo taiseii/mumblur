@@ -179,6 +179,13 @@ case "$TASK" in
         grep -q 'switchActiveProfile' App/AppCoordinator.swift
         app_build
         ;;
+    22)
+        bash "$0" 21
+        need_file MumblurCore/Sources/MumblurCore/WERNormalizer.swift
+        need_file MumblurCore/Sources/MumblurCore/Tuning/WERCalculator.swift
+        need_file MumblurCore/Tests/MumblurCoreTests/WERTests.swift
+        core_test
+        ;;
     *)
         fail "unknown task: $TASK"
         ;;
