@@ -139,6 +139,13 @@ case "$TASK" in
         need_file MumblurCore/Tests/MumblurCoreTests/Storage/AudioStoreTests.swift
         core_test
         ;;
+    17)
+        bash "$0" 16
+        need_file MumblurCore/Sources/MumblurCore/PromptBuilder.swift
+        need_file MumblurCore/Tests/MumblurCoreTests/PromptBuilderTests.swift
+        need_file MumblurCore/Tests/MumblurCoreTests/WhisperKitSpikeTests.swift
+        core_test
+        ;;
     *)
         fail "unknown task: $TASK"
         ;;

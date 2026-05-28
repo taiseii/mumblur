@@ -78,6 +78,17 @@ public final class RealWhisperKit: WhisperKitTranscribing, @unchecked Sendable {
         )
     }
 
+    /// Internal accessor for tests and the integration spike.
+    internal var whisperPipeline: WhisperKit { pipeline }
+
+    /// Encode `text` into Whisper token IDs using the loaded model's tokenizer.
+    /// Returns an empty array if the tokenizer is not yet loaded.
+    /// Throws to satisfy the `Tokenizing` protocol shape used by the rest of the pipeline.
+    public func encode(text: String) throws -> [Int] {
+        guard let t = pipeline.tokenizer else { return [] }
+        return t.encode(text: text)
+    }
+
     /// Whisper operates on 30s chunks; WhisperKit does NOT auto-pad short audio,
     /// so we pad here. Also, `TranscriptionSegment.text` includes special tokens
     /// (e.g. `<|startoftranscript|>`) — we use the cleaned `result.text` instead.
