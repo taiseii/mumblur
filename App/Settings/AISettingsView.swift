@@ -4,6 +4,7 @@ import MumblurCore
 
 struct AISettingsView: View {
     @StateObject private var vm: AIViewModel
+    @State private var advancedExpanded = false
 
     init(coordinator: AppCoordinator) {
         _vm = StateObject(wrappedValue: AIViewModel(deps: .live(coordinator)))
@@ -47,7 +48,7 @@ struct AISettingsView: View {
                 }
             }
             Section {
-                DisclosureGroup("Advanced") {
+                DisclosureGroup("Advanced", isExpanded: $advancedExpanded) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Extra body JSON")
                             .font(.caption).foregroundStyle(.secondary)
