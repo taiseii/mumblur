@@ -28,6 +28,8 @@ public final class Runner: @unchecked Sendable {
         paster: Pasting,
         persister: any DictationPersisting,
         editor: any TranscriptEditing = NoOpEditor(),
+        fewShot: any FewShotProviding = NoOpFewShot(),
+        fewShotLimit: Int = 10,
         minHoldMs: Int = 200,
         clock: @escaping @Sendable () -> Date = { Date() },
         onStateChange: @escaping @Sendable (State) -> Void = { _ in }
@@ -37,6 +39,8 @@ public final class Runner: @unchecked Sendable {
         self.paster = paster
         self.persister = persister
         self.editor = editor
+        self.fewShot = fewShot
+        self.fewShotLimit = fewShotLimit
         self.minHoldMs = minHoldMs
         self.clock = clock
         self.onStateChange = onStateChange
@@ -144,6 +148,8 @@ public final class Runner: @unchecked Sendable {
     private let paster: Pasting
     private let persister: any DictationPersisting
     private let editor: any TranscriptEditing
+    private let fewShot: any FewShotProviding
+    private let fewShotLimit: Int
     private let postProcessor = TranscriptPostProcessor()
     private let minHoldMs: Int
     private let clock: @Sendable () -> Date
@@ -163,7 +169,12 @@ public final class Runner: @unchecked Sendable {
             guard !Task.isCancelled else { return }
             var text = output.rawText
             if output.snapshot.llmEdit.enabled {
-                text = try await editor.editFailOpen(text, instructions: output.snapshot.llmEdit.prompt)
+                // Past corrections are replayed into the prompt to teach the editor this
+                // user's style — so corrected text is re-sent to the LLM on later dictations.
+                let examples = await fewShot.examples(limit: fewShotLimit)
+                let instructions = FewShotPrompt.augment(base: output.snapshot.llmEdit.prompt,
+                                                         examples: examples)
+                text = try await editor.editFailOpen(text, instructions: instructions)
                 guard !Task.isCancelled else { return }   // do not paste a cancelled run
             }
             let finalText = postProcessor.apply(text, rules: output.snapshot.rules)

@@ -192,7 +192,8 @@ final class AppCoordinator: ObservableObject {
             let paster = Paster()
             let runner = Runner(
                 recorder: recorder, transcriber: transcriber,
-                paster: paster, persister: persister, editor: editor, minHoldMs: 200,
+                paster: paster, persister: persister, editor: editor,
+                fewShot: TranscriptStoreFewShot(store: transcripts), minHoldMs: 200,
                 onStateChange: { [weak self] s in
                     Task { @MainActor in self?.applyRunnerState(s) }
                 })

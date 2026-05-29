@@ -146,6 +146,19 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(pairs[0].modelID, "m")
     }
 
+    func testFewShotAdapter_excludesUnchangedPairs_andMapsRawToCorrected() async throws {
+        let (store, _, p) = try await setup()
+        let edited = try await insertOne(store, p, raw: "raw one")
+        let unchanged = try await insertOne(store, p, raw: "same text")
+        try await store.upsertCorrection(transcriptID: edited, correctedText: "corrected one")
+        try await store.upsertCorrection(transcriptID: unchanged, correctedText: "same text") // no edit
+
+        let adapter = TranscriptStoreFewShot(store: store)
+        let examples = await adapter.examples(limit: 10)
+
+        XCTAssertEqual(examples, [FewShotExample(raw: "raw one", corrected: "corrected one")])
+    }
+
     func testTrainingPairs_requireAudio_excludesTextOnlyTranscripts() async throws {
         let (store, _, p) = try await setup()
         let textOnly = try await insertOne(store, p, withAudio: false)

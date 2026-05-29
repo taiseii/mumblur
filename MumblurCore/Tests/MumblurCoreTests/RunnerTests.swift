@@ -144,6 +144,19 @@ private actor RecordingEditor: TranscriptEditing {
     }
     func callCount() -> Int { calls }
 }
+/// Captures the instructions string the editor received (for few-shot assertions).
+private actor CapturingEditor: TranscriptEditing {
+    private(set) var lastInstructions: String?
+    func editFailOpen(_ text: String, instructions: String) async throws -> String {
+        lastInstructions = instructions; return text
+    }
+    func instructions() -> String? { lastInstructions }
+}
+/// Supplies a fixed example set regardless of limit.
+private struct StubFewShot: FewShotProviding {
+    let fixed: [FewShotExample]
+    func examples(limit: Int) async -> [FewShotExample] { fixed }
+}
 
 private func makeTranscriberWithEdit(_ kit: any WhisperKitTranscribing,
                                      enabled: Bool, prompt: String = "p",
@@ -450,6 +463,24 @@ final class RunnerLLMEditTests: XCTestCase {
         XCTAssertEqual(count, 0)
         let pasted = await paster.getCalls()
         XCTAssertEqual(pasted, ["hello"])
+    }
+
+    func testEnabled_fewShotExamplesAugmentEditorInstructions() async throws {
+        let rec = FakeAudioRecorder()
+        let tr = await makeTranscriberWithEdit(FixedKit(text: "raw words"),
+                                               enabled: true, prompt: "BASE PROMPT")
+        let editor = CapturingEditor()
+        let fewShot = StubFewShot(fixed: [FewShotExample(raw: "raw ex", corrected: "corrected ex")])
+        let runner = Runner(recorder: rec, transcriber: tr, paster: SpyPaster(),
+                            persister: NoOpPersister(), editor: editor,
+                            fewShot: fewShot, minHoldMs: 0)
+        runner.onPress(); rec.push([0.5]); runner.onRelease()
+        await waitUntilIdle(runner)
+
+        let instr = await editor.instructions()
+        XCTAssertNotNil(instr)
+        XCTAssertTrue(instr?.contains("BASE PROMPT") ?? false)    // base kept
+        XCTAssertTrue(instr?.contains("corrected ex") ?? false)   // example injected
     }
 
     func testRulesRunAfterLLM_ruleWins() async throws {
