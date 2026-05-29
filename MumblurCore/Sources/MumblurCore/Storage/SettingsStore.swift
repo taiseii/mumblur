@@ -127,6 +127,15 @@ public actor SettingsStore {
             if let v = str("llm.timeout_ms"), let n = Int(v) {
                 cfg.timeoutMs = LLMServerConfig.clampTimeout(n)
             }
+            // Advanced fields
+            cfg.maxTokens = str("llm.max_tokens").flatMap { Int($0) }
+            cfg.temperature = str("llm.temperature").flatMap { Double($0) }
+            cfg.extraBodyJSON = str("llm.extra_body") ?? ""
+            cfg.requestTemplate = str("llm.request_template") ?? ""
+            if let v = str("llm.content_path"), !v.isEmpty {
+                cfg.contentPath = v
+            }
+            cfg.contentFallbackPath = str("llm.content_fallback_path") ?? ""
             return cfg
         }
     }
@@ -143,6 +152,13 @@ public actor SettingsStore {
             try put("llm.base_url", cfg.baseURL)
             try put("llm.model", cfg.model)
             try put("llm.timeout_ms", String(LLMServerConfig.clampTimeout(cfg.timeoutMs)))
+            // Advanced fields
+            try put("llm.max_tokens", cfg.maxTokens.map(String.init) ?? "")
+            try put("llm.temperature", cfg.temperature.map { "\($0)" } ?? "")
+            try put("llm.extra_body", cfg.extraBodyJSON)
+            try put("llm.request_template", cfg.requestTemplate)
+            try put("llm.content_path", cfg.contentPath)
+            try put("llm.content_fallback_path", cfg.contentFallbackPath)
         }
     }
 

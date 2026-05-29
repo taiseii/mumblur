@@ -7,15 +7,33 @@ public struct LLMServerConfig: Equatable, Sendable {
     public var baseURL: String
     public var model: String
     public var timeoutMs: Int
+    public var maxTokens: Int?
+    public var temperature: Double?
+    public var extraBodyJSON: String
+    public var requestTemplate: String
+    public var contentPath: String
+    public var contentFallbackPath: String
 
     public init(enabled: Bool = false,
                 baseURL: String = "http://localhost:8080",
                 model: String = "",
-                timeoutMs: Int = 5000) {
+                timeoutMs: Int = 5000,
+                maxTokens: Int? = nil,
+                temperature: Double? = nil,
+                extraBodyJSON: String = "",
+                requestTemplate: String = "",
+                contentPath: String = "/choices/0/message/content",
+                contentFallbackPath: String = "") {
         self.enabled = enabled
         self.baseURL = baseURL
         self.model = model
         self.timeoutMs = LLMServerConfig.clampTimeout(timeoutMs)
+        self.maxTokens = maxTokens
+        self.temperature = temperature
+        self.extraBodyJSON = extraBodyJSON
+        self.requestTemplate = requestTemplate
+        self.contentPath = contentPath
+        self.contentFallbackPath = contentFallbackPath
     }
 
     public static let `default` = LLMServerConfig()

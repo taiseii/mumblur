@@ -101,6 +101,43 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(back.timeoutMs, 60_000)   // clamped
     }
 
+    func testLLMServerConfig_roundTripsNewAdvancedFields() async throws {
+        let db = try AppDatabase(location: .inMemory)
+        let store = SettingsStore(database: db)
+
+        // Defaults when unset
+        let initial = try await store.llmServerConfig()
+        XCTAssertNil(initial.maxTokens)
+        XCTAssertNil(initial.temperature)
+        XCTAssertEqual(initial.extraBodyJSON, "")
+        XCTAssertEqual(initial.requestTemplate, "")
+        XCTAssertEqual(initial.contentPath, "/choices/0/message/content")
+        XCTAssertEqual(initial.contentFallbackPath, "")
+
+        try await store.setLLMServerConfig(
+            LLMServerConfig(enabled: true, baseURL: "http://x:1", model: "q", timeoutMs: 5000,
+                            maxTokens: 512, temperature: 0.4,
+                            extraBodyJSON: "{\"top_p\":0.9}",
+                            requestTemplate: "{\"model\":\"{{model}}\"}",
+                            contentPath: "/choices/0/text",
+                            contentFallbackPath: "/choices/0/message/reasoning_content"))
+        let back = try await store.llmServerConfig()
+        XCTAssertEqual(back.maxTokens, 512)
+        XCTAssertEqual(back.temperature, 0.4)
+        XCTAssertEqual(back.extraBodyJSON, "{\"top_p\":0.9}")
+        XCTAssertEqual(back.requestTemplate, "{\"model\":\"{{model}}\"}")
+        XCTAssertEqual(back.contentPath, "/choices/0/text")
+        XCTAssertEqual(back.contentFallbackPath, "/choices/0/message/reasoning_content")
+
+        // Empty/garbage int/double → nil on read
+        try await store.setLLMServerConfig(
+            LLMServerConfig(enabled: false, baseURL: "http://x", model: "", timeoutMs: 5000,
+                            maxTokens: nil, temperature: nil))
+        let cleared = try await store.llmServerConfig()
+        XCTAssertNil(cleared.maxTokens)
+        XCTAssertNil(cleared.temperature)
+    }
+
     func testUpdate_roundTripsLLMEditFields() async throws {
         let db = try AppDatabase(location: .inMemory)
         let store = SettingsStore(database: db)
