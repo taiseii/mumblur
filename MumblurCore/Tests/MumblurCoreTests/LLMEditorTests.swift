@@ -172,3 +172,227 @@ private extension URLRequest {
         return data
     }
 }
+
+// MARK: - LLMEditorBodyShapeTests
+
+final class LLMEditorBodyShapeTests: XCTestCase {
+    override func tearDown() {
+        StubURLProtocol.handler = nil
+        StubURLProtocol.stallSeconds = 0
+        super.tearDown()
+    }
+
+    /// Capture the raw request body sent by editFailOpen.
+    private func captureBody(_ cfg: LLMServerConfig, text: String = "raw",
+                             instructions: String = "instr") async throws -> [String: Any] {
+        nonisolated(unsafe) var captured: Data?
+        StubURLProtocol.handler = { req in
+            captured = req.httpBodyStreamData() ?? req.httpBody
+            return (200, chatBody("ok"))
+        }
+        let ed = OpenAICompatibleEditor(config: cfg, session: stubSession())
+        _ = try await ed.editFailOpen(text, instructions: instructions)
+        let data = try XCTUnwrap(captured)
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    func testMode1_emitsMaxTokensAndTemperatureWhenSet() async throws {
+        var cfg = LLMServerConfig(enabled: true, model: "m", timeoutMs: 5000)
+        cfg.maxTokens = 256; cfg.temperature = 0.3
+        let body = try await captureBody(cfg)
+        XCTAssertEqual(body["max_tokens"] as? Int, 256)
+        XCTAssertEqual(body["temperature"] as? Double, 0.3)
+    }
+
+    func testMode1_omitsKnobsWhenNil() async throws {
+        var cfg = LLMServerConfig(enabled: true, model: "m", timeoutMs: 5000)
+        cfg.maxTokens = nil; cfg.temperature = nil
+        let body = try await captureBody(cfg)
+        XCTAssertNil(body["max_tokens"])
+        XCTAssertNil(body["temperature"])
+    }
+
+    func testMode1_extraBodyMergesNewKeys_butCanonicalWins() async throws {
+        var cfg = LLMServerConfig(enabled: true, model: "real", timeoutMs: 5000)
+        cfg.extraBodyJSON = "{\"top_p\":0.9, \"model\":\"hacked\", \"stream\":true}"
+        let body = try await captureBody(cfg)
+        XCTAssertEqual(body["top_p"] as? Double, 0.9)
+        // Canonical wins: extra must not override model or stream
+        XCTAssertEqual(body["model"] as? String, "real")
+        XCTAssertEqual(body["stream"] as? Bool, false)
+    }
+
+    func testMode1_invalidExtraBody_failsOpen_noRequest() async throws {
+        nonisolated(unsafe) var hit = false
+        StubURLProtocol.handler = { _ in hit = true; return (200, chatBody("x")) }
+        var cfg = LLMServerConfig(enabled: true, model: "m", timeoutMs: 5000)
+        cfg.extraBodyJSON = "{not json"
+        let ed = OpenAICompatibleEditor(config: cfg, session: stubSession())
+        let out = try await ed.editFailOpen("raw", instructions: "fix")
+        XCTAssertEqual(out, "raw")
+        XCTAssertFalse(hit)
+    }
+
+    func testMode2_templateSubstitutesTypedValues() async throws {
+        var cfg = LLMServerConfig(enabled: true, model: "mymodel", timeoutMs: 5000)
+        cfg.maxTokens = 100
+        cfg.temperature = 0.7
+        cfg.requestTemplate = "{\"model\":\"{{model}}\",\"prompt\":\"{{text}}\",\"system\":\"{{instructions}}\",\"max_tokens\":\"{{max_tokens}}\",\"temperature\":\"{{temperature}}\"}"
+        let body = try await captureBody(cfg, text: "hello", instructions: "be terse")
+        XCTAssertEqual(body["model"] as? String, "mymodel")
+        XCTAssertEqual(body["prompt"] as? String, "hello")
+        XCTAssertEqual(body["system"] as? String, "be terse")
+        XCTAssertEqual(body["max_tokens"] as? Int, 100)
+        XCTAssertEqual(body["temperature"] as? Double, 0.7)
+    }
+
+    func testMode2_textWithSpecialChars_safeUnderTemplate() async throws {
+        var cfg = LLMServerConfig(enabled: true, model: "m", timeoutMs: 5000)
+        cfg.requestTemplate = "{\"prompt\":\"{{text}}\"}"
+        // Newline, quote, backslash, unicode — must round-trip through JSONSerialization safely.
+        let nasty = "line1\n\"quoted\" with \\backslash and 漢字"
+        let body = try await captureBody(cfg, text: nasty)
+        XCTAssertEqual(body["prompt"] as? String, nasty)
+    }
+
+    func testMode2_invalidTemplate_failsOpen() async throws {
+        nonisolated(unsafe) var hit = false
+        StubURLProtocol.handler = { _ in hit = true; return (200, chatBody("x")) }
+        var cfg = LLMServerConfig(enabled: true, model: "m", timeoutMs: 5000)
+        cfg.requestTemplate = "not json"
+        let ed = OpenAICompatibleEditor(config: cfg, session: stubSession())
+        let out = try await ed.editFailOpen("raw", instructions: "fix")
+        XCTAssertEqual(out, "raw")
+        XCTAssertFalse(hit)
+    }
+
+    func testContentPath_walksJSONPointer() async throws {
+        StubURLProtocol.handler = { _ in (200, Data(#"{"data":{"items":[{"v":"hello"}]}}"#.utf8)) }
+        var cfg = LLMServerConfig(enabled: true, model: "m", timeoutMs: 5000)
+        cfg.contentPath = "/data/items/0/v"
+        let ed = OpenAICompatibleEditor(config: cfg, session: stubSession())
+        let out = try await ed.editFailOpen("raw", instructions: "fix")
+        XCTAssertEqual(out, "hello")
+    }
+
+    func testContentFallbackPath_usedWhenPrimaryEmpty() async throws {
+        StubURLProtocol.handler = { _ in
+            (200, Data(#"{"choices":[{"message":{"content":"","reasoning_content":"thoughts here"}}]}"#.utf8))
+        }
+        var cfg = LLMServerConfig(enabled: true, model: "m", timeoutMs: 5000)
+        cfg.contentPath = "/choices/0/message/content"
+        cfg.contentFallbackPath = "/choices/0/message/reasoning_content"
+        let ed = OpenAICompatibleEditor(config: cfg, session: stubSession())
+        let out = try await ed.editFailOpen("raw", instructions: "fix")
+        XCTAssertEqual(out, "thoughts here")
+    }
+
+    func testContent_bothPathsEmpty_failsOpenToInput() async throws {
+        StubURLProtocol.handler = { _ in
+            (200, Data(#"{"choices":[{"message":{"content":""}}]}"#.utf8))
+        }
+        var cfg = LLMServerConfig(enabled: true, model: "m", timeoutMs: 5000)
+        let ed = OpenAICompatibleEditor(config: cfg, session: stubSession())
+        let out = try await ed.editFailOpen("raw", instructions: "fix")
+        XCTAssertEqual(out, "raw")
+    }
+}
+
+// MARK: - LLMEditorProbeTests
+
+final class LLMEditorProbeTests: XCTestCase {
+    override func tearDown() {
+        StubURLProtocol.handler = nil
+        StubURLProtocol.stallSeconds = 0
+        super.tearDown()
+    }
+
+    func testProbe_disabled() async {
+        let ed = OpenAICompatibleEditor(
+            config: LLMServerConfig(enabled: false, model: "m", timeoutMs: 5000),
+            session: stubSession())
+        let r = await ed.probe()
+        if case .disabled = r { return }
+        XCTFail("expected .disabled, got \(r)")
+    }
+
+    func testProbe_invalidURL() async {
+        let ed = OpenAICompatibleEditor(
+            config: LLMServerConfig(enabled: true, baseURL: "", model: "m", timeoutMs: 5000),
+            session: stubSession())
+        let r = await ed.probe()
+        if case .invalidURL = r { return }
+        XCTFail("expected .invalidURL, got \(r)")
+    }
+
+    func testProbe_success() async {
+        StubURLProtocol.handler = { _ in (200, chatBody("hi there")) }
+        let ed = OpenAICompatibleEditor(
+            config: LLMServerConfig(enabled: true, model: "m", timeoutMs: 5000),
+            session: stubSession())
+        let r = await ed.probe()
+        if case .success(let c) = r { XCTAssertEqual(c, "hi there"); return }
+        XCTFail("expected .success, got \(r)")
+    }
+
+    func testProbe_successEmpty() async {
+        StubURLProtocol.handler = { _ in
+            (200, Data(#"{"choices":[{"message":{"content":""}}]}"#.utf8))
+        }
+        let ed = OpenAICompatibleEditor(
+            config: LLMServerConfig(enabled: true, model: "m", timeoutMs: 5000),
+            session: stubSession())
+        let r = await ed.probe()
+        if case .successEmpty(let excerpt) = r {
+            XCTAssertFalse(excerpt.isEmpty)
+            return
+        }
+        XCTFail("expected .successEmpty, got \(r)")
+    }
+
+    func testProbe_httpFailure() async {
+        StubURLProtocol.handler = { _ in (500, Data("oops".utf8)) }
+        let ed = OpenAICompatibleEditor(
+            config: LLMServerConfig(enabled: true, model: "m", timeoutMs: 5000),
+            session: stubSession())
+        let r = await ed.probe()
+        if case .httpFailure(let s, _) = r { XCTAssertEqual(s, 500); return }
+        XCTFail("expected .httpFailure, got \(r)")
+    }
+
+    func testProbe_jsonFailure() async {
+        StubURLProtocol.handler = { _ in (200, Data("not json".utf8)) }
+        let ed = OpenAICompatibleEditor(
+            config: LLMServerConfig(enabled: true, model: "m", timeoutMs: 5000),
+            session: stubSession())
+        let r = await ed.probe()
+        if case .jsonFailure(let excerpt) = r {
+            XCTAssertTrue(excerpt.contains("not json"))
+            return
+        }
+        XCTFail("expected .jsonFailure, got \(r)")
+    }
+
+    func testProbe_requestBuildFailure_invalidTemplate() async {
+        var cfg = LLMServerConfig(enabled: true, model: "m", timeoutMs: 5000)
+        cfg.requestTemplate = "not json"
+        let ed = OpenAICompatibleEditor(config: cfg, session: stubSession())
+        let r = await ed.probe()
+        if case .requestBuildFailure = r { return }
+        XCTFail("expected .requestBuildFailure, got \(r)")
+    }
+
+    func testProbe_timeout() async {
+        StubURLProtocol.stallSeconds = 5.0
+        StubURLProtocol.handler = { _ in (200, chatBody("late")) }
+        let ed = OpenAICompatibleEditor(
+            config: LLMServerConfig(enabled: true, model: "m", timeoutMs: 300),
+            session: stubSession())
+        let start = Date()
+        let r = await ed.probe()
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThan(elapsed, 2.0)
+        if case .timeout = r { return }
+        XCTFail("expected .timeout, got \(r)")
+    }
+}
