@@ -40,7 +40,7 @@ struct DataSettingsView: View {
             }
         } detail: {
             if let id = selection, let row = vm.recent.first(where: { $0.id == id }) {
-                TranscriptDetail(row: row, storageRoot: vm.storageRoot)
+                TranscriptDetail(row: row, storageRoot: vm.storageRoot, vm: vm)
             } else {
                 ContentUnavailableView("Select a dictation", systemImage: "doc.text")
             }
@@ -86,11 +86,24 @@ struct DataSettingsView: View {
 private struct TranscriptDetail: View {
     let row: TranscriptStore.Row
     let storageRoot: URL?
+    @ObservedObject var vm: DataViewModel
 
     var body: some View {
         Form {
             Section("Final text") {
                 Text(row.finalText.isEmpty ? "(empty)" : row.finalText).textSelection(.enabled)
+            }
+            Section("Correction") {
+                TextEditor(text: $vm.correctionText)
+                    .frame(minHeight: 72)
+                    .font(.body)
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Your intended text — used to tune the model. Clear to discard.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Save") { Task { await vm.saveCorrection(for: row.id) } }
+                        .keyboardShortcut("s", modifiers: .command)
+                }
             }
             if row.rawText != row.finalText {
                 Section("Raw transcription") {
@@ -127,6 +140,7 @@ private struct TranscriptDetail: View {
             }
         }
         .formStyle(.grouped)
+        .task(id: row.id) { await vm.loadCorrection(for: row.id) }
     }
 }
 
@@ -137,6 +151,9 @@ private extension DataViewModel.Deps {
             loadRetention: { (false, "days", 30) },           // retention wiring is a later task
             setRetention: { _, _, _ in /* later task */ },
             loadRecent: { await coordinator.recentTranscripts(limit: 200) },
+            loadCorrection: { id in await coordinator.correction(for: id) },
+            upsertCorrection: { id, text in await coordinator.upsertCorrection(transcriptID: id, correctedText: text) },
+            deleteCorrection: { id in await coordinator.deleteCorrection(transcriptID: id) },
             storageRoot: coordinator.storageRoot)
     }
 }

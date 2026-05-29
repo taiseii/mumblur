@@ -29,6 +29,43 @@ final class DataViewModelTests: XCTestCase {
         XCTAssertEqual(enabled, 1)
     }
 
+    func testLoadCorrection_populatesEditableField() async {
+        var requested: Int64?
+        let vm = DataViewModel(deps: .init(
+            loadStats: { nil }, loadRetention: { (false, "days", 30) }, setRetention: { _, _, _ in },
+            loadCorrection: { id in requested = id; return "prior text" }))
+        await vm.loadCorrection(for: 42)
+        XCTAssertEqual(vm.correctionText, "prior text")
+        XCTAssertEqual(requested, 42)
+    }
+
+    func testSaveCorrection_nonEmpty_upsertsTrimmedText() async {
+        var upserted: (Int64, String)?
+        var deleted: Int64?
+        let vm = DataViewModel(deps: .init(
+            loadStats: { nil }, loadRetention: { (false, "days", 30) }, setRetention: { _, _, _ in },
+            upsertCorrection: { id, t in upserted = (id, t) },
+            deleteCorrection: { id in deleted = id }))
+        vm.correctionText = "  hello world  "
+        await vm.saveCorrection(for: 7)
+        XCTAssertEqual(upserted?.0, 7)
+        XCTAssertEqual(upserted?.1, "hello world")   // ends trimmed, inner text kept
+        XCTAssertNil(deleted)                         // not a discard
+    }
+
+    func testSaveCorrection_emptyOrWhitespace_deletesInsteadOfStoringEmpty() async {
+        var upsertCalled = false
+        var deleted: Int64?
+        let vm = DataViewModel(deps: .init(
+            loadStats: { nil }, loadRetention: { (false, "days", 30) }, setRetention: { _, _, _ in },
+            upsertCorrection: { _, _ in upsertCalled = true },
+            deleteCorrection: { id in deleted = id }))
+        vm.correctionText = "   \n  "
+        await vm.saveCorrection(for: 9)
+        XCTAssertEqual(deleted, 9)        // discarded as training data
+        XCTAssertFalse(upsertCalled)      // never store an empty target
+    }
+
     func testLoad_populatesRecentAndStorageRoot() async throws {
         let db = try AppDatabase(location: .inMemory)
         let settings = SettingsStore(database: db)

@@ -26,6 +26,7 @@ final class DatabaseTests: XCTestCase {
                 sql: "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             XCTAssertEqual(Set(names), [
                 "app_setting", "calibration_run", "calibration_sample",
+                "transcript_correction",
                 "grdb_migrations", "profile", "replacement_rule",
                 "retention_policy", "transcript", "vocab_term"
             ])

@@ -39,6 +39,26 @@ public actor TranscriptStore {
         public let audioBytes: Int64?
     }
 
+    /// A user's intended text for a transcript, captured after the fact.
+    /// Latest-wins: at most one per transcript (UNIQUE(transcript_id)).
+    public struct Correction: Sendable, Identifiable {
+        public let id: Int64
+        public let transcriptID: Int64
+        public let correctedText: String
+        public let updatedAt: Date
+        public let source: String
+    }
+
+    /// A `(input, target)` example for tuning, joined from transcript + correction.
+    public struct TrainingPair: Sendable {
+        public let transcriptID: Int64
+        public let rawText: String          // Whisper output -> LLM input
+        public let correctedText: String    // user's target
+        public let audioRelPath: String?    // -> ASR fine-tune input (nil if audio not retained)
+        public let language: String?
+        public let modelID: String
+    }
+
     public enum RetentionPolicy: Sendable {
         case days(Int)
         case count(limit: Int)
@@ -115,6 +135,72 @@ public actor TranscriptStore {
                     finalText: r["final_text"],
                     audioRelPath: r["audio_rel_path"],
                     audioBytes: r["audio_bytes"])
+            }
+        }
+    }
+
+    /// Records (or replaces) the user's intended text for a transcript.
+    /// Empty `correctedText` is allowed and means "discard as training data" — distinct
+    /// from absence of a row, which means "not yet reviewed".
+    public func upsertCorrection(transcriptID: Int64, correctedText: String,
+                                 source: String = "manual") throws {
+        try database.write { db in
+            try db.execute(sql: """
+                INSERT INTO transcript_correction(transcript_id, corrected_text, updated_at, source)
+                VALUES (?,?,?,?)
+                ON CONFLICT(transcript_id) DO UPDATE SET
+                    corrected_text = excluded.corrected_text,
+                    updated_at     = excluded.updated_at,
+                    source         = excluded.source
+            """, arguments: [transcriptID, correctedText,
+                             Int64(Date().timeIntervalSince1970 * 1000), source])
+        }
+    }
+
+    public func correction(for transcriptID: Int64) throws -> Correction? {
+        try database.read { db in
+            try GRDB.Row.fetchOne(db, sql: """
+                SELECT id, transcript_id, corrected_text, updated_at, source
+                FROM transcript_correction WHERE transcript_id = ?
+            """, arguments: [transcriptID]).map { r in
+                Correction(id: r["id"],
+                           transcriptID: r["transcript_id"],
+                           correctedText: r["corrected_text"],
+                           updatedAt: Date(timeIntervalSince1970: Double(r["updated_at"] as Int64) / 1000.0),
+                           source: r["source"])
+            }
+        }
+    }
+
+    /// Removes a transcript's correction (the user discarding it as training data).
+    /// The transcript row itself is untouched.
+    public func deleteCorrection(transcriptID: Int64) throws {
+        try database.write { db in
+            try db.execute(sql: "DELETE FROM transcript_correction WHERE transcript_id = ?",
+                           arguments: [transcriptID])
+        }
+    }
+
+    /// Corrected transcripts as `(raw_text -> corrected_text)` training pairs, newest first.
+    /// `requireAudio` restricts to transcripts whose audio was retained (for ASR tuning).
+    public func trainingPairs(limit: Int? = nil, requireAudio: Bool = false) throws -> [TrainingPair] {
+        try database.read { db in
+            var sql = """
+                SELECT t.id, t.raw_text, c.corrected_text, t.audio_rel_path, t.language, t.model_id
+                FROM transcript_correction c
+                JOIN transcript t ON t.id = c.transcript_id
+                WHERE (? = 0 OR t.audio_rel_path IS NOT NULL)
+                ORDER BY c.updated_at DESC, t.id DESC
+            """
+            var args: [DatabaseValueConvertible] = [requireAudio ? 1 : 0]
+            if let limit { sql += " LIMIT ?"; args.append(limit) }
+            return try GRDB.Row.fetchAll(db, sql: sql, arguments: StatementArguments(args)).map { r in
+                TrainingPair(transcriptID: r["id"],
+                             rawText: r["raw_text"],
+                             correctedText: r["corrected_text"],
+                             audioRelPath: r["audio_rel_path"],
+                             language: r["language"],
+                             modelID: r["model_id"])
             }
         }
     }

@@ -34,6 +34,7 @@ public final class AppDatabase: @unchecked Sendable {
         var migrator = DatabaseMigrator()
         migrator.registerV1()
         migrator.registerV2()
+        migrator.registerV3()
         try migrator.migrate(queue)
     }
 }

@@ -61,4 +61,103 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(rows[1].finalText, "final2")
         XCTAssertNil(rows[1].audioRelPath)
     }
+
+    // MARK: - Corrections (training-data capture)
+
+    private func insertOne(_ store: TranscriptStore, _ p: Profile,
+        raw: String = "r", final: String = "f", withAudio: Bool = false) async throws -> Int64 {
+        if withAudio {
+            let audio = TranscriptStore.AudioMetadata(
+                relPath: "clips/\(UUID().uuidString).wav", bytes: 16,
+                sha256: String(repeating: "a", count: 64),
+                sampleRateHz: 16000, channels: 1, pcmEncoding: "pcm_s16le")
+            try await store.insertWithAudio(profileID: p.id, profileNameSnapshot: p.name,
+                promptSnapshot: nil, startedAt: Date(), durationMs: 1, modelID: "m",
+                language: "en", rawText: raw, finalText: final, audio: audio)
+        } else {
+            try await store.insertTextOnly(profileID: p.id, profileNameSnapshot: p.name,
+                promptSnapshot: nil, startedAt: Date(), durationMs: 1, modelID: "m",
+                language: "en", rawText: raw, finalText: final)
+        }
+        return try await store.recent(limit: 1).first!.id
+    }
+
+    func testUpsertCorrection_isLatestWins_keepsSingleRowWithNewestText() async throws {
+        let (store, _, p) = try await setup()
+        let tid = try await insertOne(store, p)
+
+        try await store.upsertCorrection(transcriptID: tid, correctedText: "first")
+        let early = try await store.correction(for: tid)
+        try await store.upsertCorrection(transcriptID: tid, correctedText: "second", source: "manual")
+
+        let latest = try await store.correction(for: tid)
+        XCTAssertEqual(early?.correctedText, "first")
+        XCTAssertEqual(latest?.correctedText, "second")        // overwrote, not appended
+        XCTAssertEqual(latest?.id, early?.id)                  // same row (UNIQUE(transcript_id))
+        XCTAssertGreaterThanOrEqual(latest!.updatedAt, early!.updatedAt)
+    }
+
+    func testDeleteCorrection_removesRow_leavesTranscriptIntact() async throws {
+        let (store, _, p) = try await setup()
+        let tid = try await insertOne(store, p)
+        try await store.upsertCorrection(transcriptID: tid, correctedText: "x")
+
+        try await store.deleteCorrection(transcriptID: tid)
+
+        let gone = try await store.correction(for: tid)
+        let transcripts = try await store.recent(limit: 10)
+        XCTAssertNil(gone)                       // correction gone
+        XCTAssertEqual(transcripts.count, 1)     // transcript untouched
+    }
+
+    func testCorrection_forUncorrectedTranscript_isNil() async throws {
+        let (store, _, p) = try await setup()
+        let tid = try await insertOne(store, p)
+        let c = try await store.correction(for: tid)
+        XCTAssertNil(c)
+    }
+
+    func testCorrection_cascadeDeletesWhenTranscriptSwept() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mumblur-tests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (store, _, p) = try await setup()
+        let tid = try await insertOne(store, p)
+        try await store.upsertCorrection(transcriptID: tid, correctedText: "x")
+
+        try await store.sweep(policy: .count(limit: 0), audio: AudioStore(root: root))
+
+        let afterSweep = try await store.correction(for: tid)
+        XCTAssertNil(afterSweep)     // ON DELETE CASCADE
+    }
+
+    func testTrainingPairs_returnsRawAndCorrected_onlyForCorrectedTranscripts() async throws {
+        let (store, _, p) = try await setup()
+        let corrected = try await insertOne(store, p, raw: "raw text")
+        _ = try await insertOne(store, p, raw: "uncorrected")   // no correction -> excluded
+        try await store.upsertCorrection(transcriptID: corrected, correctedText: "clean text")
+
+        let pairs = try await store.trainingPairs()
+        XCTAssertEqual(pairs.count, 1)
+        XCTAssertEqual(pairs[0].transcriptID, corrected)
+        XCTAssertEqual(pairs[0].rawText, "raw text")
+        XCTAssertEqual(pairs[0].correctedText, "clean text")
+        XCTAssertEqual(pairs[0].language, "en")
+        XCTAssertEqual(pairs[0].modelID, "m")
+    }
+
+    func testTrainingPairs_requireAudio_excludesTextOnlyTranscripts() async throws {
+        let (store, _, p) = try await setup()
+        let textOnly = try await insertOne(store, p, withAudio: false)
+        let withAudio = try await insertOne(store, p, withAudio: true)
+        try await store.upsertCorrection(transcriptID: textOnly, correctedText: "a")
+        try await store.upsertCorrection(transcriptID: withAudio, correctedText: "b")
+
+        let all = try await store.trainingPairs(requireAudio: false)
+        let audioOnly = try await store.trainingPairs(requireAudio: true)
+        XCTAssertEqual(all.count, 2)
+        XCTAssertEqual(audioOnly.count, 1)
+        XCTAssertEqual(audioOnly[0].transcriptID, withAudio)
+        XCTAssertNotNil(audioOnly[0].audioRelPath)
+    }
 }

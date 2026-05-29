@@ -121,6 +121,28 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
+    /// The saved correction text for a transcript, or "" if none / store not ready.
+    func correction(for transcriptID: Int64) async -> String {
+        guard let transcriptStore else { return "" }
+        do { return (try await transcriptStore.correction(for: transcriptID))?.correctedText ?? "" }
+        catch {
+            Logger.app.error("correction(for:) failed: \(error.localizedDescription)")
+            return ""
+        }
+    }
+
+    func upsertCorrection(transcriptID: Int64, correctedText: String) async {
+        guard let transcriptStore else { return }
+        do { try await transcriptStore.upsertCorrection(transcriptID: transcriptID, correctedText: correctedText) }
+        catch { Logger.app.error("upsertCorrection failed: \(error.localizedDescription)") }
+    }
+
+    func deleteCorrection(transcriptID: Int64) async {
+        guard let transcriptStore else { return }
+        do { try await transcriptStore.deleteCorrection(transcriptID: transcriptID) }
+        catch { Logger.app.error("deleteCorrection failed: \(error.localizedDescription)") }
+    }
+
     /// Aggregate counts/sizes for the Data tab; nil if the store isn't ready yet.
     func transcriptStats() async -> TranscriptStore.Stats? {
         guard let transcriptStore else { return nil }
