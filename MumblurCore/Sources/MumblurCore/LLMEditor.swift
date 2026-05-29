@@ -118,13 +118,23 @@ public actor OpenAICompatibleEditor: TranscriptEditing {
 
     public func configure(_ config: LLMServerConfig) { self.config = config }
 
-    /// Normalize a user-entered base URL into the chat-completions endpoint.
-    /// Accepts `http://host:port`, a trailing `/`, or a trailing `/v1`.
+    /// Normalize a user-entered URL into the chat-completions endpoint.
+    /// Accepts:
+    /// - `http://host:port` → appends `/v1/chat/completions`
+    /// - `http://host:port/` → trailing slash trimmed, then appends
+    /// - `http://host:port/v1` → appends `/chat/completions`
+    /// - `http://host:port/v1/chat/completions` → used as-is (full URL paste)
+    /// - `http://host:port/chat/completions` → used as-is (non-versioned path)
     static func endpoint(base: String) -> URL? {
         var s = base.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !s.isEmpty else { return nil }
         while s.hasSuffix("/") { s.removeLast() }
-        if s.hasSuffix("/v1") { s.removeLast(3) }
+        let lower = s.lowercased()
+        if lower.hasSuffix("/chat/completions") {
+            // User pasted the full endpoint URL — use as-is.
+            return URL(string: s)
+        }
+        if lower.hasSuffix("/v1") { s.removeLast(3) }
         while s.hasSuffix("/") { s.removeLast() }
         return URL(string: s + "/v1/chat/completions")
     }

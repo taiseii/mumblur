@@ -10,6 +10,16 @@ final class LLMEditorURLTests: XCTestCase {
                        "http://localhost:8080/v1/chat/completions")
         XCTAssertEqual(OpenAICompatibleEditor.endpoint(base: "http://localhost:8080/v1")?.absoluteString,
                        "http://localhost:8080/v1/chat/completions")
+        XCTAssertEqual(OpenAICompatibleEditor.endpoint(base: "http://localhost:8080/v1/")?.absoluteString,
+                       "http://localhost:8080/v1/chat/completions")
+        // Full endpoint URL pasted by the user — must not double-append.
+        XCTAssertEqual(OpenAICompatibleEditor.endpoint(base: "http://localhost:8080/v1/chat/completions")?.absoluteString,
+                       "http://localhost:8080/v1/chat/completions")
+        XCTAssertEqual(OpenAICompatibleEditor.endpoint(base: "http://localhost:8080/v1/chat/completions/")?.absoluteString,
+                       "http://localhost:8080/v1/chat/completions")
+        // Non-versioned full path (some servers).
+        XCTAssertEqual(OpenAICompatibleEditor.endpoint(base: "http://localhost:8080/chat/completions")?.absoluteString,
+                       "http://localhost:8080/chat/completions")
         XCTAssertNil(OpenAICompatibleEditor.endpoint(base: ""))
         XCTAssertNil(OpenAICompatibleEditor.endpoint(base: "   "))
     }
