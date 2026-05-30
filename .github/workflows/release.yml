@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # needed for gh release create
+
+jobs:
+  package:
+    name: Build + upload Mumblur.app
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # tags + history for release notes
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build + zip release artifact
+        env:
+          # ref_name is set by the tag push (e.g. v0.2.0); use env, not direct
+          # interpolation, to follow GitHub's command-injection guidance.
+          TAG: ${{ github.ref_name }}
+        run: scripts/package_release.sh "$TAG"
+
+      - name: Create GitHub Release with notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            "dist/Mumblur-$TAG.zip" \
+            --title "$TAG" \
+            --generate-notes

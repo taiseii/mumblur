@@ -9,3 +9,10 @@ Mumblur.xcodeproj/project.xcworkspace/xcuserdata/
 # Whisper model cache
 models/
 *.bin
+
+# Release artifacts
+build-release/
+dist/
+
+# Claude-mem context dump (auto-generated; not for distribution)
+AGENTS.md
