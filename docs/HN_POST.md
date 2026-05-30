@@ -1,56 +1,52 @@
-# Show HN draft
+# Show HN draft (friendly tone)
 
-Two strong title options — pick whichever resonates more after rereading:
+## Title — pick one
 
-1. **Show HN: Mumblur – Local push-to-talk dictation for macOS with optional LLM cleanup**
-2. **Show HN: Local macOS dictation that learns your style from your own corrections**
+1. **Show HN: Mumblur – local macOS dictation that learns from your corrections**
+2. **Show HN: I made a free macOS dictation app because I was tired of cloud subscriptions**
+3. **Show HN: Local Mac dictation with optional local-LLM cleanup**
 
-Option 1 is the safest framing. Option 2 leans on the personalization angle (which is the genuine differentiator).
-
----
+Option 1 leads with the differentiator and reads neutral. Option 2 is more personal but borders on entitled — fine if you actually feel that way. Option 3 is the safest, most technical phrasing.
 
 ## Body
 
-Hi HN — I built Mumblur, a macOS menu-bar dictation tool that runs entirely on-device by default and learns from corrections you make.
+Hey HN — I built Mumblur, a small macOS menu-bar dictation app that runs entirely on your machine.
 
-The motivation: I dictate a lot, but built-in macOS dictation hallucinates names and refuses to remove fillers, while every "AI dictation" product either uploads my audio to a cloud or wants a subscription for something that ought to be a 200-line state machine. WhisperKit runs Whisper on Apple Silicon at decent speed already; the rest is just glue.
+The honest reason it exists: I dictate a lot, and the options always felt wrong. Built-in macOS dictation hallucinates words and silently sends audio to Apple. Most of the better tools (SuperWhisper, Whisper Memos, etc.) are great but they're paid subscriptions for what feels like a wrapper around Whisper plus an LLM call. So I wrote my own.
 
-Hold Right Option, speak, release. Audio goes to WhisperKit on-device. If you've configured a local LLM server (llama.cpp / Ollama / LM Studio / anything OpenAI-compatible), the raw transcript is cleaned up — punctuation, fillers, casing — by whatever model you point it at. If you haven't, the raw Whisper text is pasted as-is. No cloud round-trip in either case.
+Hold Right Option, talk, release. Audio stays on your Mac — [WhisperKit](https://github.com/argmaxinc/argmax-oss-swift) does transcription locally. If you want fillers cleaned up, you can point it at a local LLM server (llama.cpp, Ollama, LM Studio — anything that speaks OpenAI's chat-completion API). By default it talks to nothing. No cloud, no account, no telemetry.
 
-The part I'm most curious about feedback on: every dictation is persisted with both the raw Whisper output and the post-LLM final text. You can open any past transcript and fill in a "Correction" field — what you actually meant to say. The 10 most recent `(raw → corrected)` pairs are then injected as few-shot examples into the next LLM-edit prompt. No retraining, no fine-tuning, no upload — it's just prompt augmentation against a local model. Over a few dozen corrections, the editor starts producing text that looks like yours. The same captured pairs are ready for actual LoRA training later if anyone wants to go further.
+The part I had the most fun building, and I'd love feedback on:
+
+Every dictation is saved with both the raw Whisper output and the post-LLM final text. You can open any past transcript and write what you actually meant in a "Correction" field. The last 10 of those `(raw → corrected)` pairs get folded into the next LLM call as few-shot examples. After a few weeks of correcting yourself, the cleanup starts sounding like you. It's just prompt augmentation against your local model — no retraining, no fine-tuning, no uploads. The captured pairs are sitting in plain SQLite though, ready for actual LoRA training if anyone wants to go further.
 
 Other things it does:
-- Pick any WhisperKit model, including custom CoreML folders or arbitrary Hugging Face Whisper variants.
-- Per-profile language pinning (English, German, Japanese, …) or auto-detect.
-- Regex/literal replacement rules per profile (your hard substitutions always win, after the LLM stage).
-- Microphone selection from the menu bar, by stable Core Audio UID so re-plugged USB mics rebind correctly.
-- Optional audio retention with day-based or count-based caps. Off by default.
 
-Privacy posture: zero outbound calls unless you've enabled LLM editing, in which case it talks to `localhost` only. Storage is a plain SQLite file under `~/Library/Application Support/Mumblur/` — open it with any browser.
+- Pick any WhisperKit model, or drop in a custom CoreML folder.
+- Multiple profiles, each with its own language pin (or auto-detect), vocabulary prompt, and regex/literal replacement rules. Your hard substitutions always run last and always win.
+- Microphone selection from the menu bar — by stable Core Audio UID, so re-plugged USB mics rebind correctly.
+- Optional audio retention with day-based or count-based caps. Off by default — text-only mode keeps zero audio on disk.
 
-Stack: Swift 6, SwiftUI, AVAudioEngine for capture, Core Audio for input routing, [WhisperKit](https://github.com/argmaxinc/argmax-oss-swift) for transcription, [GRDB](https://github.com/groue/GRDB.swift) for persistence. ~150 unit tests; strict TDD across the codebase. MIT licensed.
+Stack: Swift 6, SwiftUI, AVAudioEngine, [WhisperKit](https://github.com/argmaxinc/argmax-oss-swift), [GRDB](https://github.com/groue/GRDB.swift) for the SQLite layer. About 150 unit tests and strict TDD across the codebase. MIT licensed.
 
-The build is ad-hoc-signed (no Apple Developer Program), so first launch needs `xattr -dr com.apple.quarantine /Applications/Mumblur.app` — instructions in the README. Notarization is on the roadmap.
+The binary is ad-hoc-signed (I haven't bought an Apple Developer Program membership yet), so first launch needs `xattr -dr com.apple.quarantine /Applications/Mumblur.app`. README has the full instructions. Notarization is on the roadmap.
 
-Code: https://github.com/taiseii/mumblur
-Release: (link to v0.1.0 release after tagging)
+Code + downloads: https://github.com/taiseii/mumblur
 
-Curious whether anyone has a better recipe for the few-shot-vs-LoRA tradeoff for ASR cleanup — prompt-stuffing works well at low data volume but obviously caps out.
-
----
+I'd genuinely love feedback on the few-shot-from-corrections idea — it works surprisingly well at low data volume but obviously caps out. Curious whether anyone has tried something better than prompt-stuffing without going full LoRA.
 
 ## Posting checklist
 
-- [ ] Tag `v0.1.0` and run the release workflow (or `scripts/package_release.sh`) so the Releases page has a downloadable `Mumblur.zip` before you post.
-- [ ] Pick the title (lean toward option 2 if you want engagement; option 1 if you want clarity).
-- [ ] Post to https://news.ycombinator.com/submit during US business hours for visibility (roughly 8am–11am Pacific weekdays).
-- [ ] First comment from your own account: link to a 30-second demo GIF/screenshot if you have one. (You don't yet — worth recording the menu-bar interaction and one dictation with LLM edit on, before posting.)
-- [ ] Be ready to answer in real time for ~2 hours after posting — HN replies tail off fast if the author goes silent.
+- [ ] Tag `v0.1.0` and run the release workflow so the Releases page has a downloadable `Mumblur.zip` before you post.
+- [ ] Record a ~15-second screencap of the menu-bar interaction + one dictation with LLM editing on. Embed the GIF in the README — Show HN engagement is heavily front-loaded and a visual makes a huge difference.
+- [ ] Submit at https://news.ycombinator.com/submit during weekday mornings Pacific time (roughly 8–10 a.m. PT).
+- [ ] Stay at the keyboard for ~2 hours after posting. HN replies tail off fast if the author goes silent.
+- [ ] First reply from your own account: thank early commenters and link to the GIF / a longer demo if you have one.
 
 ## Things HN will probably ask
 
-- "Why not just use macOS dictation?" — built-in is cloud-routed by default; doesn't expose a hotkey-style PTT; no programmable cleanup layer.
-- "Why not [SuperWhisper / Whisper-something]?" — those are great but typically closed-source, paid, or don't expose the LLM cleanup stage as a swappable local server. Mumblur is OSS, MIT, local-only by default.
-- "How is the few-shot actually injected?" — it's appended to the system prompt as alternating `Raw: …\nCorrected: …` blocks (v1). Proper alternating user/assistant messages will come when the protocol gains an `examples:` parameter.
-- "What about Linux/Windows?" — WhisperKit is CoreML-only. A different STT backend would be needed; out of scope right now.
-- "What about Whisper hallucinations on silence?" — Whisper does this; we can't fix it from upstream. The post-processor and the LLM cleanup help; capturing audio for retention lets you build an eval set if you want to go deeper.
+- "Why not just use macOS dictation?" — Built-in routes through Apple servers by default; doesn't expose a hotkey-style PTT; no programmable cleanup layer.
+- "Why not SuperWhisper / Whisper Memos / X?" — They're great. They're closed-source, paid, and don't let you swap in your own local LLM for cleanup. Mumblur is OSS, MIT, local-only by default.
+- "How is the few-shot actually injected?" — Appended to the system prompt as `Raw: …\nCorrected: …` blocks. Proper alternating user/assistant messages will come when the protocol gains an `examples:` parameter.
+- "Linux / Windows?" — WhisperKit is CoreML-only. A different STT backend would be needed; out of scope right now.
+- "What about Whisper hallucinations on silence?" — Whisper does this. The replacement-rules and LLM cleanup help a bit. Capturing audio for retention gives you the material to build an eval set if you want to go deeper.
