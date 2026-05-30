@@ -88,14 +88,68 @@ private struct TranscriptDetail: View {
     let storageRoot: URL?
     @ObservedObject var vm: DataViewModel
 
+    private var summary: TextDiff.Summary {
+        TextDiff.summarize(raw: row.rawText, final: row.finalText)
+    }
+
+    private var diffSpans: [TextDiff.Span] {
+        TextDiff.wordDiff(from: row.rawText, to: row.finalText)
+    }
+
+    private static func chars(_ n: Int) -> String {
+        "\(n) char\(n == 1 ? "" : "s")"
+    }
+
+    private var rawHeader: String {
+        "Raw input (Whisper) — \(Self.chars(summary.rawChars))"
+    }
+
+    private var correctedHeader: String {
+        let base = "Corrected (AI edit + rules) — \(Self.chars(summary.finalChars))"
+        guard summary.delta != 0 else { return base }
+        // Use the en-dash form "−12" / "+5" so the sign is unambiguous at a glance.
+        let sign = summary.delta > 0 ? "+" : "−"
+        return "\(base) (\(sign)\(abs(summary.delta)))"
+    }
+
+    private var diffAttributed: AttributedString {
+        var out = AttributedString()
+        for span in diffSpans {
+            switch span {
+            case .equal(let s):
+                out.append(AttributedString(s))
+            case .added(let s):
+                var added = AttributedString(s)
+                added.foregroundColor = .green
+                added.underlineStyle = .single
+                out.append(added)
+            case .removed(let s):
+                var removed = AttributedString(s)
+                removed.foregroundColor = .red
+                removed.strikethroughStyle = .single
+                out.append(removed)
+            }
+        }
+        return out
+    }
+
     var body: some View {
         Form {
-            Section("Raw input (Whisper)") {
+            Section(rawHeader) {
                 Text(row.rawText.isEmpty ? "(empty)" : row.rawText)
                     .textSelection(.enabled).foregroundStyle(.secondary)
             }
-            Section("Corrected (AI edit + rules)") {
-                Text(row.finalText.isEmpty ? "(empty)" : row.finalText).textSelection(.enabled)
+            Section(correctedHeader) {
+                if row.finalText.isEmpty {
+                    Text("(empty)")
+                } else if summary.isUnchanged {
+                    Label("No changes applied", systemImage: "equal.circle")
+                        .foregroundStyle(.secondary).font(.caption)
+                } else {
+                    Text(diffAttributed).textSelection(.enabled)
+                    Text("Red strikethrough = removed by editor. Green underline = added.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
             }
             Section("Correction") {
                 TextEditor(text: $vm.correctionText)
