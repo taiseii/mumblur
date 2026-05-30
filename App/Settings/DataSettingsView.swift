@@ -90,7 +90,11 @@ private struct TranscriptDetail: View {
 
     var body: some View {
         Form {
-            Section("Final text") {
+            Section("Raw input (Whisper)") {
+                Text(row.rawText.isEmpty ? "(empty)" : row.rawText)
+                    .textSelection(.enabled).foregroundStyle(.secondary)
+            }
+            Section("Corrected (AI edit + rules)") {
                 Text(row.finalText.isEmpty ? "(empty)" : row.finalText).textSelection(.enabled)
             }
             Section("Correction") {
@@ -103,12 +107,6 @@ private struct TranscriptDetail: View {
                     Spacer()
                     Button("Save") { Task { await vm.saveCorrection(for: row.id) } }
                         .keyboardShortcut("s", modifiers: .command)
-                }
-            }
-            if row.rawText != row.finalText {
-                Section("Raw transcription") {
-                    Text(row.rawText.isEmpty ? "(empty)" : row.rawText)
-                        .textSelection(.enabled).foregroundStyle(.secondary)
                 }
             }
             Section("Details") {
