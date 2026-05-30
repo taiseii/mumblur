@@ -174,8 +174,12 @@ public final class Runner: @unchecked Sendable {
                 let examples = await fewShot.examples(limit: fewShotLimit)
                 let instructions = FewShotPrompt.augment(base: output.snapshot.llmEdit.prompt,
                                                          examples: examples)
+                let gateMsg = "LLM edit gate open: examples=\(examples.count) inLen=\(text.count) promptLen=\(instructions.count)"
+                Logger.runner.notice("\(gateMsg, privacy: .public)")
                 text = try await editor.editFailOpen(text, instructions: instructions)
                 guard !Task.isCancelled else { return }   // do not paste a cancelled run
+            } else {
+                Logger.runner.notice("LLM edit gate closed: snapshot.llmEdit.enabled=false")
             }
             let finalText = postProcessor.apply(text, rules: output.snapshot.rules)
             guard !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }

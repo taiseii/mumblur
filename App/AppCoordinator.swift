@@ -26,6 +26,8 @@ final class AppCoordinator: ObservableObject {
     @Published private(set) var modelLoadingID: String?
     /// Model name currently downloading, if an install is in flight.
     @Published private(set) var downloadingModelID: String?
+    @Published private(set) var audioInputs: [AudioInputDevice] = []
+    @Published private(set) var preferredInputUID: String?
     /// Fractional download progress (0...1) for `downloadingModelID`.
     @Published private(set) var downloadProgress: Double = 0
 
@@ -143,6 +145,32 @@ final class AppCoordinator: ObservableObject {
         catch { Logger.app.error("deleteCorrection failed: \(error.localizedDescription)") }
     }
 
+    // MARK: - Audio inputs (mic selection)
+
+    /// Re-enumerate input devices (e.g., when the user opens the menu so a freshly
+    /// plugged USB mic shows up).
+    func refreshAudioInputs() {
+        audioInputs = AudioInputs.listInputDevices()
+    }
+
+    /// Persist and apply a mic-input choice. `nil` means "use macOS system default".
+    /// Takes effect on the next dictation; an active recording is untouched.
+    func setPreferredInput(uid: String?) async {
+        guard let settings = settingsStore else { return }
+        do { try await settings.setInputDeviceUID(uid) }
+        catch { Logger.app.error("setInputDeviceUID failed: \(error.localizedDescription)") }
+        preferredInputUID = uid
+        if let recorder = recorder as? AudioRecorder {
+            recorder.setPreferredInput(uid: uid)
+        }
+    }
+
+    /// Display label for the menu bar: the chosen device's name, or "System default".
+    var preferredInputDisplayName: String {
+        AudioInputs.resolve(preferredUID: preferredInputUID, available: audioInputs)?.name
+            ?? "System default"
+    }
+
     /// Aggregate counts/sizes for the Data tab; nil if the store isn't ready yet.
     func transcriptStats() async -> TranscriptStore.Stats? {
         guard let transcriptStore else { return nil }
@@ -188,7 +216,19 @@ final class AppCoordinator: ObservableObject {
             let llmConfig = try await settings.llmServerConfig()
             let editor = OpenAICompatibleEditor(config: llmConfig)
 
+            // Single source of truth: the global "Enable LLM editing" gates Runner.
+            // Patch the freshly-built snapshot so its llmEdit.enabled mirrors the global flag,
+            // regardless of the (now-unused) per-profile column.
+            let bootPrompt = AppCoordinator.resolvedLLMEditPrompt(active.llmEditPrompt)
+            await transcriber.updateLLMEdit(
+                LLMEditConfig(enabled: llmConfig.enabled, prompt: bootPrompt))
+
             let recorder = try AudioRecorder()
+            // Restore the chosen mic input, if any, before the first recording.
+            let savedInputUID = try await settings.inputDeviceUID()
+            recorder.setPreferredInput(uid: savedInputUID)
+            self.preferredInputUID = savedInputUID
+            self.audioInputs = AudioInputs.listInputDevices()
             let paster = Paster()
             let runner = Runner(
                 recorder: recorder, transcriber: transcriber,
@@ -327,10 +367,22 @@ final class AppCoordinator: ObservableObject {
         do {
             try await settings.setLLMServerConfig(cfg)
             await llmEditor?.configure(cfg)
+            // Global toggle is the single Runner gate — patch the live snapshot to match.
+            let activePrompt = settingsBridge.profiles
+                .first(where: { $0.id == settingsBridge.activeProfileID })?.llmEditPrompt
+            await transcriber?.updateLLMEdit(
+                LLMEditConfig(enabled: cfg.enabled,
+                              prompt: AppCoordinator.resolvedLLMEditPrompt(activePrompt)))
         } catch {
             Logger.app.error("setLLMServerConfig failed: \(error.localizedDescription)")
             lastError = error.localizedDescription
         }
+    }
+
+    /// Resolve a profile's stored LLM-edit prompt: empty/nil → default.
+    private static func resolvedLLMEditPrompt(_ stored: String?) -> String {
+        let trimmed = (stored ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? LLMEditConfig.defaultPrompt : trimmed
     }
 
     func currentLLMServerConfig() async -> LLMServerConfig {

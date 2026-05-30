@@ -114,6 +114,28 @@ public actor SettingsStore {
         }
     }
 
+    /// User-selected microphone input device UID, or nil for "system default".
+    public func inputDeviceUID() throws -> String? {
+        try database.read { db in
+            try String.fetchOne(db,
+                sql: "SELECT value FROM app_setting WHERE key='audio.input_device_uid'")
+        }
+    }
+
+    /// Persist (or clear with `nil`) the preferred input device UID.
+    public func setInputDeviceUID(_ uid: String?) throws {
+        try database.write { db in
+            if let uid {
+                try db.execute(sql: """
+                    INSERT INTO app_setting(key,value) VALUES('audio.input_device_uid',?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """, arguments: [uid])
+            } else {
+                try db.execute(sql: "DELETE FROM app_setting WHERE key='audio.input_device_uid'")
+            }
+        }
+    }
+
     public func llmServerConfig() throws -> LLMServerConfig {
         try database.read { db in
             func str(_ k: String) -> String? {

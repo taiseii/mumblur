@@ -331,7 +331,12 @@ public actor OpenAICompatibleEditor: TranscriptEditing {
 
     public func editFailOpen(_ text: String, instructions: String) async throws -> String {
         let cfg = config
-        guard cfg.enabled, let url = Self.endpoint(base: cfg.baseURL) else { return text }
+        let t0 = Date()
+        guard cfg.enabled, let url = Self.endpoint(base: cfg.baseURL) else {
+            let reason = "LLM edit skipped: cfg.enabled=\(cfg.enabled), urlOk=\(Self.endpoint(base: cfg.baseURL) != nil)"
+            Logger.transcribe.notice("\(reason, privacy: .public)")
+            return text
+        }
         let model = cfg.model
         let session = self.session
 
@@ -359,9 +364,14 @@ public actor OpenAICompatibleEditor: TranscriptEditing {
                 return data
             }
             let (content, _) = Self.extractContent(data: data, cfg: cfg)
+            let elapsed = Int(Date().timeIntervalSince(t0) * 1000)
             if let content, !content.isEmpty {
+                let msg = "LLM edit ok: in=\(text.count) out=\(content.count) ms=\(elapsed)"
+                Logger.transcribe.notice("\(msg, privacy: .public)")
                 return content
             }
+            let msg = "LLM edit empty content, fail-open: in=\(text.count) ms=\(elapsed)"
+            Logger.transcribe.notice("\(msg, privacy: .public)")
             return text
         } catch is CancellationError {
             throw CancellationError()

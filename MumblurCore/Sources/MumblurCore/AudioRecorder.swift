@@ -16,11 +16,20 @@ public final class AudioRecorder: AudioRecording, @unchecked Sendable {
     private var chunks: [[Float]] = []
     private var converter: AVAudioConverter?
     private var active: Bool = false
+    private var preferredInputUID: String?
 
     public init() throws {
         // Engine is lazily configured on start(); init only verifies we can ask
         // the input node for a format (which can throw on devices with no mic).
         _ = engine.inputNode.outputFormat(forBus: 0)
+    }
+
+    /// Choose a specific input device by Core Audio UID. Pass `nil` to fall back
+    /// to whatever macOS has set as the default input. Applied on the next `start()`;
+    /// no effect on a currently-active recording.
+    public func setPreferredInput(uid: String?) {
+        lock.lock(); defer { lock.unlock() }
+        preferredInputUID = uid
     }
 
     public func start() throws {
@@ -34,6 +43,16 @@ public final class AudioRecorder: AudioRecording, @unchecked Sendable {
             )
         }
         chunks = []
+
+        // Route to the chosen input before reading the format. A missing/unplugged
+        // device silently falls back to system default — the UID lookup returns nil.
+        if let uid = preferredInputUID, let devID = AudioInputs.audioDeviceID(forUID: uid) {
+            do {
+                try AudioInputs.apply(deviceID: devID, to: engine)
+            } catch {
+                Logger.audio.notice("preferred input apply failed; using default. err=\(error.localizedDescription, privacy: .public)")
+            }
+        }
 
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)

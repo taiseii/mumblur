@@ -149,4 +149,25 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(back?.llmEditEnabled, true)
         XCTAssertEqual(back?.llmEditPrompt, "Tidy it up")
     }
+
+    func testInputDeviceUID_defaultsToNil() async throws {
+        let store = try makeStore()
+        let uid = try await store.inputDeviceUID()
+        XCTAssertNil(uid)   // empty means "use system default"
+    }
+
+    func testInputDeviceUID_setAndReadBack() async throws {
+        let store = try makeStore()
+        try await store.setInputDeviceUID("AppleHDAEngineInput:1B,0,1,0:0")
+        let uid = try await store.inputDeviceUID()
+        XCTAssertEqual(uid, "AppleHDAEngineInput:1B,0,1,0:0")
+    }
+
+    func testInputDeviceUID_setNil_clearsTheSelection() async throws {
+        let store = try makeStore()
+        try await store.setInputDeviceUID("some-uid")
+        try await store.setInputDeviceUID(nil)
+        let uid = try await store.inputDeviceUID()
+        XCTAssertNil(uid)
+    }
 }

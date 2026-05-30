@@ -38,6 +38,20 @@ struct MenuBarContent: View {
                 }
             }
 
+            Menu("Microphone: \(coordinator.preferredInputDisplayName)") {
+                Button(coordinator.preferredInputUID == nil ? "✓ System default" : "System default") {
+                    Task { await coordinator.setPreferredInput(uid: nil) }
+                }
+                Divider()
+                ForEach(coordinator.audioInputs) { d in
+                    Button(coordinator.preferredInputUID == d.uid ? "✓ \(d.name)" : d.name) {
+                        Task { await coordinator.setPreferredInput(uid: d.uid) }
+                    }
+                }
+                Divider()
+                Button("Refresh device list") { coordinator.refreshAudioInputs() }
+            }
+
             Button("Settings…") {
                 // macOS Tahoe 26: openSettings() requires a render tree; the hidden
                 // Window trampoline (Task 25) listens for this notification and
