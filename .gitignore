@@ -14,5 +14,8 @@ models/
 build-release/
 dist/
 
+# Local CI replication (xcodebuild -derivedDataPath build-ci)
+build-ci/
+
 # Claude-mem context dump (auto-generated; not for distribution)
 AGENTS.md
