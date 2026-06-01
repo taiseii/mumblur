@@ -58,9 +58,28 @@ final class AIViewModel: ObservableObject {
 
     func saveProfile() async {
         guard let id = selectedProfileID else { return }
-        await deps.saveProfileAI(id, profileEditEnabled,
-                                 profilePrompt.isEmpty ? nil : profilePrompt)
+        // If the user hasn't changed the prefilled default, persist nil so the
+        // stored value tracks the evolving default instead of pinning a snapshot.
+        let trimmed = profilePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let payload: String?
+        if trimmed.isEmpty || trimmed == LLMEditConfig.defaultPrompt {
+            payload = nil
+        } else {
+            payload = profilePrompt
+        }
+        await deps.saveProfileAI(id, profileEditEnabled, payload)
         profiles = await deps.loadProfiles()
+    }
+
+    /// Restore the editor instructions to the canonical default. Persists on Save.
+    func resetPromptToDefault() {
+        profilePrompt = LLMEditConfig.defaultPrompt
+    }
+
+    /// True when the editor's current text matches the stored default (whitespace-trimmed).
+    var promptIsDefault: Bool {
+        profilePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            == LLMEditConfig.defaultPrompt
     }
 
     func test() async {
@@ -75,6 +94,9 @@ final class AIViewModel: ObservableObject {
     private func syncProfileFields() {
         let p = profiles.first { $0.id == selectedProfileID }
         profileEditEnabled = p?.llmEditEnabled ?? false
-        profilePrompt = p?.llmEditPrompt ?? ""
+        // An empty stored value means "use the runtime default". Show the actual
+        // default in the editor so the user can see what's being asked of the model.
+        let stored = (p?.llmEditPrompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        profilePrompt = stored.isEmpty ? LLMEditConfig.defaultPrompt : stored
     }
 }

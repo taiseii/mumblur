@@ -80,18 +80,37 @@ struct AISettingsView: View {
                     .padding(.vertical, 4)
                 }
             }
-            Section("Per-Profile Editing") {
-                Picker("Profile", selection: Binding(
-                    get: { vm.selectedProfileID },
-                    set: { vm.selectProfile($0) })) {
-                    ForEach(vm.profiles) { p in Text(p.name).tag(Optional(p.id)) }
+            Section {
+                if vm.profiles.count > 1 {
+                    Picker("Profile", selection: Binding(
+                        get: { vm.selectedProfileID },
+                        set: { vm.selectProfile($0) })) {
+                        ForEach(vm.profiles) { p in Text(p.name).tag(Optional(p.id)) }
+                    }
                 }
-                Toggle("Edit transcripts for this profile", isOn: $vm.profileEditEnabled)
-                VStack(alignment: .leading) {
-                    Text("Editing instructions").font(.caption).foregroundStyle(.secondary)
-                    TextEditor(text: $vm.profilePrompt).frame(minHeight: 80).font(.body.monospaced())
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Sent as the system prompt before each edit. Edit freely; reset returns to the built-in default.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                        Spacer()
+                        if vm.promptIsDefault {
+                            Text("Using default")
+                                .font(.caption2).foregroundStyle(.secondary)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Color.secondary.opacity(0.15), in: Capsule())
+                        }
+                    }
+                    TextEditor(text: $vm.profilePrompt)
+                        .frame(minHeight: 100)
+                        .font(.body.monospaced())
                 }
-                Button("Save profile") { Task { await vm.saveProfile() } }
+                HStack {
+                    Button("Save prompt") { Task { await vm.saveProfile() } }
+                    Button("Reset to default") { vm.resetPromptToDefault() }
+                        .disabled(vm.promptIsDefault)
+                }
+            } header: {
+                Text("Editing Instructions")
             }
         }
         .formStyle(.grouped)
