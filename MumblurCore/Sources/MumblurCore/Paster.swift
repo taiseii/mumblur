@@ -32,17 +32,22 @@ public struct DefaultKeystrokeSender: KeystrokeSending {
 @MainActor
 public struct Paster: Pasting {
     private let keystroke: KeystrokeSending
+    private let pasteboard: NSPasteboard
 
-    public init(keystroke: KeystrokeSending = DefaultKeystrokeSender()) {
+    /// `pasteboard` is injectable so tests can use an isolated, uniquely-named
+    /// pasteboard instead of the shared `.general` one (which races under
+    /// parallel test execution).
+    public init(keystroke: KeystrokeSending = DefaultKeystrokeSender(),
+                pasteboard: NSPasteboard = .general) {
         self.keystroke = keystroke
+        self.pasteboard = pasteboard
     }
 
     public func paste(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.setString(text, forType: .string)
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
         keystroke.sendCmdV()
         Logger.paste.debug("pasted \(text.count) chars")
     }

@@ -4,11 +4,18 @@ import AppKit
 
 @MainActor
 final class PasterTests: XCTestCase {
+    /// Each test gets its own uniquely-named pasteboard so parallel runs can't
+    /// clobber each other via the shared `.general` pasteboard.
+    private func makePasteboard() -> NSPasteboard {
+        NSPasteboard.withUniqueName()
+    }
+
     func testPaste_writesToPasteboardAndCallsKeystroke() async {
-        let pb = NSPasteboard.general
+        let pb = makePasteboard()
+        defer { pb.releaseGlobally() }
         pb.clearContents()
         let spy = KeystrokeSpy()
-        let paster = Paster(keystroke: spy)
+        let paster = Paster(keystroke: spy, pasteboard: pb)
 
         await paster.paste("hello mumblur")
 
@@ -17,11 +24,12 @@ final class PasterTests: XCTestCase {
     }
 
     func testPaste_emptyStringIsNoop() async {
-        let pb = NSPasteboard.general
+        let pb = makePasteboard()
+        defer { pb.releaseGlobally() }
         pb.clearContents()
         pb.setString("sentinel", forType: .string)
         let spy = KeystrokeSpy()
-        let paster = Paster(keystroke: spy)
+        let paster = Paster(keystroke: spy, pasteboard: pb)
 
         await paster.paste("")
 
@@ -30,11 +38,12 @@ final class PasterTests: XCTestCase {
     }
 
     func testPaste_whitespaceOnlyIsNoop() async {
-        let pb = NSPasteboard.general
+        let pb = makePasteboard()
+        defer { pb.releaseGlobally() }
         pb.clearContents()
         pb.setString("sentinel2", forType: .string)
         let spy = KeystrokeSpy()
-        let paster = Paster(keystroke: spy)
+        let paster = Paster(keystroke: spy, pasteboard: pb)
 
         await paster.paste("   \n\t  ")
 
