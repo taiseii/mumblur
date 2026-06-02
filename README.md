@@ -7,6 +7,8 @@ No telemetry. No cloud. No account. Just a menu-bar icon and a hotkey.
 [![Tests](https://github.com/taiseii/mumblur/actions/workflows/test.yml/badge.svg)](https://github.com/taiseii/mumblur/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+![Mumblur demo](docs/demo.gif)
+
 ---
 
 ## Features
